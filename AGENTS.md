@@ -64,7 +64,6 @@ scripts/
   indb/ indb_to_ont_csv.py                    (Anuvaad INDB xlsx)
   tbca/ tbca_to_ont_csv.py                    (scraped TBCA CSVs)
   shared/ import_fdc.py         psycopg2 COPY loader (all sources)
-          translate_foods.py    DeepL -> CSV from converted food.csv files
           translate_all.py      DeepL, DB-driven, all sources, per-source CSVs
   run_pipeline.py               orchestrates download/convert/schema/import
   test_against_source.py        validates DB/CSVs vs raw source data

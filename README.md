@@ -75,9 +75,11 @@ python3 tbca/tbca_to_ont_csv.py --foods tbca_foods.csv \
     --nutrients tbca_nutrients_wide.csv --output out/tbca
 python3 shared/import_fdc.py --csv-dir out/tbca --append
 
-# 4. (optional) machine-translate names to a CSV, then import with --append.
-python3 shared/translate_foods.py --api-key "$DEEPL_KEY" --target de \
-    --input out/fdc --input out/indb --input out/tbca
+# 4. (optional) machine-translate every source's names into a language.
+#    Reads the DB, writes out/<source>/food_translation_de.csv, then asks
+#    whether to write the rows back into food_translation.
+export DEEPL_API_KEY="your-key:fx"
+python3 shared/translate_all.py --target de
 ```
 
 `import_fdc.py` refreshes `food_summary` at the end of every run.
@@ -120,9 +122,12 @@ All map to the 24 canonical nutrients and normalize units at import.
   dir. Truncates by default, `--append` for additional sources; derives
   COPY column lists from CSV headers; refreshes `food_summary`; works for
   every source, not just FDC.
-- **`shared/translate_foods.py`** — machine-translates food names via
-  DeepL into a `food_translation` CSV (never touches the DB). Resumable,
-  batched, skips names that already have a translation.
+- **`shared/translate_all.py`** — universal DeepL translator. Reads the DB
+  for every source's untranslated English descriptions, writes each
+  source's rows to `out/<source>/food_translation_<locale>.csv`, then
+  prompts whether to insert them into `food_translation` (`ON CONFLICT DO
+  NOTHING`). Resumable; skips foods that already have a translation (e.g.
+  BLS German for `de`). Reads `$DEEPL_API_KEY` / `$SUPABASE_DB_URL`.
 
 ### Testing
 - **`test_against_source.py`** — samples random foods from Supabase (or a
@@ -150,7 +155,7 @@ python3 test_against_source.py --source-dir source --samples 50   # vs Supabase
       fdc/                   FDC downloader + converter
       bls/                   BLS downloader + converter
       indb/  tbca/           INDB / TBCA converters
-      shared/                import_fdc.py, translate_foods.py
+      shared/                import_fdc.py, translate_all.py
       test_against_source.py source-vs-DB validator
     sql/                     schema.sql + \copy import scripts
     diagrams/                Mermaid ER diagram (schema ground truth)
