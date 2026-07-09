@@ -192,7 +192,8 @@ def convert(data_xlsx: Path, out_dir: Path) -> None:
             if amount is not None and amount >= 0:
                 add_nutrient(nid, amount * factor)
 
-        d2, d3 = val(row[col.get("vitd2_ug", -1)]), val(row[col.get("vitd3_ug", -1)])
+        d2 = val(row[col["vitd2_ug"]]) if "vitd2_ug" in col else None
+        d3 = val(row[col["vitd3_ug"]]) if "vitd3_ug" in col else None
         if d2 is not None or d3 is not None:
             add_nutrient(VITD_ID, (d2 or 0) + (d3 or 0))
 

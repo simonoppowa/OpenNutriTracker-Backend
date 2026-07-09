@@ -11,12 +11,19 @@ where it stopped.
 
 Usage:
     python translate_foods.py \
-        --api-key "xxxxxxxx-xxxx-...:fx" \
         --target de \
         --input fdc_out/ --input indb_out/ --input tbca_out/ \
         [--skip-source bls] \
         [--out food_translation_de.csv] \
         [--limit 100]      # start small to check quality/quota
+
+    # Recommended: supply the key via $DEEPL_API_KEY so it is not
+    # visible in ps / shell history:
+    export DEEPL_API_KEY="xxxxxxxx-xxxx-...:fx"
+    python translate_foods.py --target de ...
+
+    # Or use --api-key directly (less safe):
+    python translate_foods.py --api-key "..." --target de ...
 
 Tip: when translating to German, don't pass bls_out/ (or use
 --skip-source bls) - BLS foods already have native German names in
@@ -39,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import sys
 import time
 from pathlib import Path
@@ -123,7 +131,10 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description="Translate food descriptions from converted food.csv "
                     "files via DeepL into a CSV")
-    ap.add_argument("--api-key", required=True, help="DeepL API key")
+    ap.add_argument("--api-key", default=None,
+                    help="DeepL API key (default: $DEEPL_API_KEY env var; "
+                         "prefer the env var so the key is not visible in "
+                         "ps/shell history)")
     ap.add_argument("--target", required=True,
                     help="target locale, e.g. de, fr, es, it, pt")
     ap.add_argument("--input", action="append", required=True, type=Path,
@@ -138,7 +149,10 @@ def main() -> None:
 
     locale = args.target.lower()
     deepl_target = DEEPL_TARGET.get(locale, locale.upper())
-    url = deepl_url(args.api_key)
+    api_key = args.api_key or os.environ.get("DEEPL_API_KEY")
+    if not api_key:
+        sys.exit("error: DeepL API key required - set $DEEPL_API_KEY or pass --api-key")
+    url = deepl_url(api_key)
     out_path = args.out or Path(f"food_translation_{locale}.csv")
 
     todo = load_foods(args.input, set(args.skip_source))
@@ -165,7 +179,7 @@ def main() -> None:
         for i in range(0, len(todo), BATCH_SIZE):
             batch = todo[i:i + BATCH_SIZE]
             translated = translate_batch(
-                url, args.api_key, [d for _, d in batch], deepl_target)
+                url, api_key, [d for _, d in batch], deepl_target)
             if len(translated) != len(batch):
                 sys.exit("error: DeepL returned a different number of texts")
             for (fid, _), text in zip(batch, translated):
