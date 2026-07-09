@@ -1,0 +1,228 @@
+erDiagram
+    %% ==================================================
+    %% Multi-source food schema: FDC (Foundation, SR Legacy,
+    %% FNDDS Survey, Branded) + BLS 4.0 + Anuvaad INDB + TBCA.
+    %% food.id ranges: FDC = fdc_id (<10M), BLS 10M+, INDB 20M+, TBCA 30M+
+    %% Nullability: NN = NOT NULL, NULL = nullable
+    %% "FUTURE:" tag = worth importing for planned features
+    %% ==================================================
+
+    %% ---------- CANONICAL CORE (source-agnostic) ----------
+
+    food_source {
+        text code PK "NN - fdc_foundation | fdc_sr_legacy | fdc_survey | fdc_branded | bls | indb | tbca"
+        text name "NN - display name of the source database"
+        text license_note "NULL - CC0 (FDC), CC BY 4.0 (BLS, INDB), attribution (TBCA)"
+    }
+
+    food {
+        bigint id PK "NN - surrogate key"
+        text source FK "NN -> food_source"
+        text source_code "NN - fdc_id | BLS code (C131000) | INDB code (ASC001); UNIQUE(source, source_code)"
+        text description "NN - full English name (all current sources ship one)"
+        text short_title "NULL - concise display name (derived; curatable)"
+        int food_category_id FK "NULL - set for FDC (1-28) and FNDDS/WWEIA (1002-9999)"
+        date publication_date "NULL - FUTURE: data freshness"
+    }
+
+    nutrient {
+        int id PK "NN - canonical list (24 = MealNutrimentsDBO)"
+        text name "NN"
+        text unit_name "NN - G | MG | UG | KCAL"
+        numeric rank "NULL - FUTURE: display order in nutrient panel"
+    }
+
+    nutrient_mapping {
+        text source PK "NN - import FAMILY: fdc | bls | indb (NO FK: 'fdc' covers all fdc_* sources)"
+        text source_component_code PK "NN - FDC '1008', BLS 'ENERCC', INDB 'carb_g'"
+        int nutrient_id FK "NN -> canonical nutrient"
+        numeric unit_factor "NN default 1 - converts source unit to canonical"
+    }
+
+    food_nutrient {
+        bigint id PK "NN"
+        bigint food_id FK "NN"
+        int nutrient_id FK "NN - canonical, already converted"
+        numeric amount "NN - per 100 g"
+        text origin "NULL - harmonized: analysis | literature | calculated | label"
+        text reference "NULL - BLS literature ref / FDC footnote"
+        int data_points "NULL - FDC only - FUTURE: quality badge"
+        numeric min "NULL - FDC only - FUTURE: value ranges"
+        numeric max "NULL - FDC only - FUTURE: value ranges"
+    }
+
+    food_category {
+        int id PK "NN - FDC ids 1-28, WWEIA ids 1002-9999 (no overlap)"
+        text source "NULL - null = FDC canonical; 'fdc_survey' = WWEIA"
+        text description "NN - Dairy and Egg Products, Human milk..."
+    }
+
+    measure_unit {
+        int id PK "NN"
+        text name "NN -> servingUnit"
+    }
+
+    food_portion {
+        bigint id PK "NN - FDC + INDB servings; BLS 4.0 ships none"
+        bigint food_id FK "NN"
+        numeric amount "NULL -> servingQuantity"
+        int measure_unit_id FK "NN"
+        text portion_description "NULL -> servingSize"
+        text modifier "NULL - FUTURE: chopped, sliced..."
+        int seq_num "NULL - FUTURE: offer ALL portions"
+        numeric gram_weight "NN"
+    }
+
+    food_alias {
+        bigint id PK "NN"
+        bigint food_id FK "NN"
+        text locale "NN - BCP 47; alias language"
+        text alias "NN - Spaghetti, Garam Chai (INDB-derived)... UNIQUE(food_id, locale, alias)"
+        text source "NN default 'curated' - curated | community | derived"
+        timestamptz created_at "NN default now()"
+    }
+
+    tag {
+        int id PK "NN"
+        text slug "NN UNIQUE - stable key: vegan, breakfast, high-protein..."
+        text kind "NULL - diet | allergen | meal_type | custom"
+    }
+
+    food_tag {
+        bigint food_id PK, FK "NN"
+        int tag_id PK, FK "NN"
+        text source "NULL - curated | derived | community"
+    }
+
+    tag_translation {
+        int tag_id PK, FK "NN"
+        text locale PK "NN - BCP 47"
+        text name "NN - vegan -> Vegan, high-protein -> Proteinreich"
+    }
+
+    food_image {
+        bigint id PK "NN"
+        bigint food_id FK "NN"
+        text kind "NN - thumbnail | main"
+        text storage_path "NULL - Supabase Storage key (bucket food-images)"
+        text external_url "NULL - remote URL; CHECK: path OR url set"
+        int width "NULL"
+        int height "NULL"
+        text attribution "NULL - photographer / license credit"
+        bool ai_generated "NN default false - true for DALL-E/Imagen output"
+        timestamptz created_at "NN default now()"
+    }
+
+    food_summary {
+        bigint food_id PK "NN - MATERIALIZED VIEW, app queries only this"
+        text source "NN - fdc_foundation | ... | fdc_branded | bls | indb | tbca"
+        text source_code "NN - fdc_id / source code"
+        text name "NN - EN; app joins food_translation for locale"
+        text short_title "NN - concise label (coalesce short_title, description)"
+        text brands "NULL -> MealDBO.brands (branded foods)"
+        text barcode "NULL - gtin/upc; barcode scan lookup"
+        text category "NULL"
+        numeric serving_gram_weight "NULL - grams of the default serving"
+        text thumbnail_url "NULL -> MealDBO.thumbnailImageUrl"
+        text main_image_url "NULL -> MealDBO.mainImageUrl"
+        text_array tags "NULL - aggregated slugs; GIN index for tag search"
+        numeric serving_quantity "NULL"
+        text serving_unit "NULL"
+        text serving_size "NULL"
+        numeric energy_kcal_100 "NULL"
+        numeric macros_and_micros_100 "NULL - all 24 MealNutrimentsDBO columns (dart: double?)"
+    }
+
+    %% ---------- LOCALIZATION (i18n) ----------
+    %% BLS German names imported directly as locale 'de'
+    %% (native quality, no machine translation needed).
+    %% FDC foods need translation; COALESCE fallback to EN.
+
+    food_translation {
+        bigint food_id PK, FK "NN"
+        text locale PK "NN - de, fr, es... (BCP 47)"
+        text description "NN - BLS: Lebensmittelbezeichnung"
+        text source "NN default 'machine' - native | machine | community | verified"
+        bool ai_generated "NN default false - true for MT/LLM output (DeepL...)"
+        timestamptz updated_at "NN default now()"
+    }
+
+    food_category_translation {
+        int food_category_id PK, FK "NN"
+        text locale PK "NN"
+        text description "NN"
+    }
+
+    food_portion_translation {
+        bigint food_portion_id PK, FK "NN"
+        text locale PK "NN"
+        text portion_description "NULL"
+        text modifier "NULL"
+    }
+
+    measure_unit_translation {
+        int measure_unit_id PK, FK "NN"
+        text locale PK "NN"
+        text name "NN - cup -> Tasse"
+    }
+
+    %% ---------- SOURCE-SPECIFIC SIDE TABLES ----------
+
+    bls_component {
+        text code PK "NN - ENERCC, WATER, PROT625..."
+        text name_de "NN"
+        text name_en "NN"
+        text unit "NN - kJ, kcal, g, mg, ug"
+        text component_group "NULL - Energie, Vitamine..."
+        text formula "NULL - e.g. ENERCC = 4*PROT625 + ..."
+    }
+
+    market_acquisition {
+        bigint food_id PK, FK "NN - brand + barcode (populated by fdc_branded)"
+        text upc_code "NULL - gtin/upc; scanned-barcode lookup"
+        text brand_description "NULL -> MealDBO.brands"
+    }
+
+    input_food {
+        bigint id PK "NN - FDC - FUTURE: 'made from' list"
+        bigint food_id FK "NN"
+        bigint input_food_id FK "NULL"
+        numeric gram_weight "NULL"
+    }
+
+    food_component {
+        bigint id PK "NN - FDC - FUTURE: refuse % / edible portion"
+        bigint food_id FK "NN"
+        text name "NN"
+        numeric pct_weight "NULL"
+        bool is_refuse "NN"
+    }
+
+    retention_factor {
+        int id PK "NN - FUTURE: cooked-recipe nutrient retention"
+        text code "NN"
+        text description "NN"
+    }
+
+    %% ---------- RELATIONSHIPS ----------
+    food_source ||--o{ food : "provides"
+    nutrient ||--o{ nutrient_mapping : "target of"
+    bls_component ||--o| nutrient_mapping : "mapped (source=bls)"
+    food_category ||--o{ food : "categorizes"
+    food ||--o{ food_nutrient : "has"
+    nutrient ||--o{ food_nutrient : "measured as"
+    food ||--o{ food_portion : "has servings"
+    measure_unit ||--o{ food_portion : "unit of"
+    food ||--o{ food_image : "pictured by"
+    food ||--o{ food_alias : "searchable as"
+    food ||--o{ food_tag : "tagged with"
+    tag ||--o{ food_tag : "applied to"
+    tag ||--o{ tag_translation : "localized as"
+    food ||--o| food_summary : "pivots into"
+    food ||--o{ food_translation : "localized as"
+    food_category ||--o{ food_category_translation : "localized as"
+    food_portion ||--o{ food_portion_translation : "localized as"
+    measure_unit ||--o{ measure_unit_translation : "localized as"
+    food ||--o| market_acquisition : "FUTURE (fdc)"
+    food ||--o{ input_food : "FUTURE (fdc)"
+    food ||--o{ food_component : "FUTURE (fdc)"
