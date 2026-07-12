@@ -262,7 +262,18 @@ select
     -- app used to map id 9999 to — instead of leaking the raw name.
     case when mu.name = 'undetermined' then 'portion' else mu.name end
                                            as serving_unit,
-    p.portion_description                  as serving_size,
+    -- Household measure of the default portion. FDC splits it across two
+    -- columns: FNDDS writes prose into portion_description, while SR
+    -- Legacy/Foundation leave that empty and put the measure text ("slice",
+    -- "cup, sliced") into modifier — their measure_unit is 'undetermined'
+    -- precisely because the real unit lives there. Fall back to
+    -- "<amount> <modifier>" so those foods get "1 slice" instead of nothing.
+    coalesce(
+        nullif(p.portion_description, ''),
+        case when nullif(p.modifier, '') is not null
+             then trim(concat_ws(' ', p.amount::text, p.modifier))
+        end
+    )                                      as serving_size,
     p.gram_weight                          as serving_gram_weight,
     coalesce(it.external_url, '/storage/v1/object/public/food-images/' || it.storage_path)
                                            as thumbnail_url,
@@ -297,7 +308,8 @@ from food f
 left join food_category fc on fc.id = f.food_category_id
 left join market_acquisition ma on ma.food_id = f.id   -- brand + barcode
 left join lateral (                      -- first portion = default serving
-    select fp.amount, fp.portion_description, fp.gram_weight, fp.measure_unit_id
+    select fp.amount, fp.portion_description, fp.modifier, fp.gram_weight,
+           fp.measure_unit_id
     from food_portion fp
     where fp.food_id = f.id
     order by fp.seq_num nulls last, fp.id
