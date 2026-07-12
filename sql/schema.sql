@@ -257,7 +257,11 @@ select
     ma.upc_code                            as barcode,     -- scanned lookup
     fc.description                         as category,
     p.amount                               as serving_quantity,
-    mu.name                                as serving_unit,
+    -- FDC's measure_unit 9999 is literally named 'undetermined' (a portion
+    -- with no household measure). Present it as 'portion' — the label the
+    -- app used to map id 9999 to — instead of leaking the raw name.
+    case when mu.name = 'undetermined' then 'portion' else mu.name end
+                                           as serving_unit,
     p.portion_description                  as serving_size,
     p.gram_weight                          as serving_gram_weight,
     coalesce(it.external_url, '/storage/v1/object/public/food-images/' || it.storage_path)
