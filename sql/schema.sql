@@ -372,6 +372,88 @@ create index if not exists idx_food_summary_tags
 create index if not exists idx_food_summary_barcode   -- barcode scan lookup (branded/OFF)
     on food_summary (barcode) where barcode is not null;
 
+-- Supports search_food_summary below. The app's previous PostgREST
+-- `textSearch` on this column had no index at all, so English search was a
+-- sequential scan of the whole view; the RPC is only as fast as what backs
+-- it, and this is what backs it.
+create index if not exists idx_food_summary_name_fts
+    on food_summary using gin (to_tsvector('english', name));
+
+-- ---------- 6b. App-facing search functions -----------------
+-- The app calls these instead of filtering the view over the URL, so a
+-- search term never reaches the API gateway log.
+--
+-- PostgREST turns a table query into a GET, which puts the term in the
+-- query string; it issues an RPC as a POST with a JSON body. The gateway
+-- log records `request.url` and `request.search` but has no body field, and
+-- those URLs sit in the same record as the caller's IP, city, postal code,
+-- ISP and TLS fingerprint. Removing that pairing is the whole point.
+-- App issue simonoppowa/OpenNutriTracker#882.
+--
+-- Ranking deliberately stays in the app. These return the same unordered
+-- candidate pool the PostgREST queries returned, so results are unchanged
+-- by the move — `ts_rank` ordering here would be a different change, made
+-- for a different reason, and would have to be argued on its own merits.
+
+create or replace function search_food_summary(
+    term      text,
+    sources   text[] default null,
+    max_rows  int    default 100
+)
+returns setof food_summary
+language sql
+stable
+security invoker
+set search_path = public, pg_temp
+as $$
+    select fs.*
+    from food_summary fs
+    where to_tsvector('english', fs.name)
+          @@ websearch_to_tsquery('english', term)
+      and (sources is null or fs.source = any (sources))
+    limit greatest(max_rows, 0)
+$$;
+
+create or replace function search_food_translation(
+    term      text,
+    loc       text,
+    max_rows  int default 100
+)
+returns table (food_id bigint, description text, source text)
+language sql
+stable
+security invoker
+set search_path = public, pg_temp
+as $$
+    select ft.food_id, ft.description, ft.source
+    from food_translation ft
+    where ft.locale = loc
+      and to_tsvector('simple', ft.description)
+          @@ websearch_to_tsquery('simple', term)
+    limit greatest(max_rows, 0)
+$$;
+
+-- The localized path needs a second hop: the app ranks the translation
+-- matches itself and then fetches the summary rows for the ids that
+-- survived. Those ids are derived from the term, so sending them as a
+-- filter would put a fingerprint of the search back in the URL — which is
+-- why this is an RPC too rather than a plain `in.(...)` query.
+create or replace function food_summary_by_ids(
+    ids      bigint[],
+    sources  text[] default null
+)
+returns setof food_summary
+language sql
+stable
+security invoker
+set search_path = public, pg_temp
+as $$
+    select fs.*
+    from food_summary fs
+    where fs.food_id = any (ids)
+      and (sources is null or fs.source = any (sources))
+$$;
+
 -- ---------- 7. Row Level Security ---------------------------
 -- Reference data: readable by everyone, writable only by service_role
 -- (service_role bypasses RLS; no insert/update policies needed).
@@ -399,6 +481,18 @@ end $$;
 -- Materialized views have no RLS; restrict via grants instead.
 revoke all on food_summary from anon, authenticated;
 grant select on food_summary to anon, authenticated;
+
+-- Functions are executable by PUBLIC on creation, so the grant is only
+-- meaningful after the revoke.
+revoke execute on function search_food_summary(text, text[], int) from public;
+revoke execute on function search_food_translation(text, text, int) from public;
+revoke execute on function food_summary_by_ids(bigint[], text[]) from public;
+grant execute on function search_food_summary(text, text[], int)
+    to anon, authenticated;
+grant execute on function search_food_translation(text, text, int)
+    to anon, authenticated;
+grant execute on function food_summary_by_ids(bigint[], text[])
+    to anon, authenticated;
 
 -- ---------- 8. Storage --------------------------------------
 -- Public bucket for food photos (thumbnail_url/main_image_url above
