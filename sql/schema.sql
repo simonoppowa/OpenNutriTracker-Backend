@@ -169,6 +169,13 @@ create table if not exists food_portion_translation (
     locale           text   not null,
     portion_description  text,
     modifier             text,
+    -- Same provenance vocabulary as food_translation. Seeded machine output
+    -- is not fit to show: the app displays only 'verified' rows and falls
+    -- back to its own word for "serving" otherwise.
+    source        text not null default 'machine'
+                  check (source in ('native', 'machine', 'community', 'verified')),
+    ai_generated  boolean not null default false,
+    updated_at    timestamptz not null default now(),
     primary key (food_portion_id, locale)
 );
 
