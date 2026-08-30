@@ -176,6 +176,13 @@ create table if not exists measure_unit_translation (
     measure_unit_id  int  not null references measure_unit (id) on delete cascade,
     locale           text not null,
     name             text not null,
+    -- Same provenance vocabulary as food_translation. Seeded machine output
+    -- is not fit to show: the app is expected to display only 'verified'
+    -- rows and fall back to its own word for "serving" otherwise.
+    source        text not null default 'machine'
+                  check (source in ('native', 'machine', 'community', 'verified')),
+    ai_generated  boolean not null default false,
+    updated_at    timestamptz not null default now(),
     primary key (measure_unit_id, locale)
 );
 
