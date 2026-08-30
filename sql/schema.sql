@@ -498,6 +498,36 @@ grant select on food_summary to anon, authenticated;
 
 -- Functions are executable by PUBLIC on creation, so the grant is only
 -- meaningful after the revoke.
+-- A food's default portion label in the reader's language, and only when a
+-- human has verified it. A function rather than a table read for the reason
+-- the search functions are: a GET puts the food id in the gateway log beside
+-- the caller's IP. The lateral pick mirrors food_summary's, so the label
+-- describes the same portion its serving_gram_weight came from.
+create or replace function portion_labels_by_food_ids(
+    ids  bigint[],
+    loc  text
+)
+returns table (food_id bigint, label text)
+language sql
+stable
+as $$
+    select f.id, t.portion_description
+    from unnest(ids) as f(id)
+    join lateral (
+        select fp.id
+        from food_portion fp
+        where fp.food_id = f.id
+        order by fp.seq_num nulls last, fp.id
+        limit 1
+    ) p on true
+    join food_portion_translation t
+      on t.food_portion_id = p.id
+     and t.locale = loc
+     and t.source = 'verified'
+    where t.portion_description is not null
+      and btrim(t.portion_description) <> '';
+$$;
+
 revoke execute on function search_food_summary(text, text[], int) from public;
 revoke execute on function search_food_translation(text, text, int) from public;
 revoke execute on function food_summary_by_ids(bigint[], text[]) from public;
@@ -506,6 +536,9 @@ grant execute on function search_food_summary(text, text[], int)
 grant execute on function search_food_translation(text, text, int)
     to anon, authenticated;
 grant execute on function food_summary_by_ids(bigint[], text[])
+    to anon, authenticated;
+revoke execute on function portion_labels_by_food_ids(bigint[], text) from public;
+grant execute on function portion_labels_by_food_ids(bigint[], text)
     to anon, authenticated;
 
 -- ---------- 8. Storage --------------------------------------
