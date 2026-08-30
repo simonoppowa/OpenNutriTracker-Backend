@@ -286,15 +286,21 @@ def apply(conn, tgt, locale: str, path: Path, dry_run: bool, assume_yes: bool) -
             # One %s only: execute_values expands exactly one placeholder
             # into the VALUES list, so the locale travels in each tuple
             # rather than as a second parameter.
+            #
+            # A join, not `t.<key> in (select ... where = v.english)`. The
+            # subquery form is correlated, so Postgres re-scanned the whole
+            # source table once per matching row — measured at 23,176 seq
+            # scans and 86 seconds for *two* corrections, against 913 total
+            # cost and one scan for this. Six corrections timed out.
             execute_values(
                 cur,
                 f"""
                 update {tgt.table} t
                 set {tgt.text_col} = v.translated, updated_at = now()
-                from (values %s) as v(english, translated, locale)
-                where t.{tgt.join_key} in (
-                          select src.id from {tgt.join_table} src
-                          where src.{tgt.join_text} = v.english)
+                from (values %s) as v(english, translated, locale),
+                     {tgt.join_table} src
+                where src.{tgt.join_text} = v.english
+                  and t.{tgt.join_key} = src.id
                   and t.locale = v.locale
                 """,
                 [(en, tr, locale) for en, tr in corrections.items()],
