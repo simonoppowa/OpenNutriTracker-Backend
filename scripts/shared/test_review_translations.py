@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Checks the rule review_measure_units.py exists to enforce.
+"""Checks the rule review_translations.py exists to enforce.
 
 Promoting a locale to 'verified' is a claim that a person read the whole
 list. The only thing standing between that claim and a half-finished CSV is
 `plan`, so it is worth testing on its own — and it can be, because it
 decides everything without a database.
 
-Run: python3 scripts/shared/test_review_measure_units.py
+Run: python3 scripts/shared/test_review_translations.py
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from review_measure_units import DELETE_MARKER, IncompleteReview, plan  # noqa: E402
+from review_translations import DELETE_MARKER, IncompleteReview, plan  # noqa: E402
 
 FAILURES: list[str] = []
 

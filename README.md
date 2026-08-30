@@ -129,14 +129,24 @@ All map to the 24 canonical nutrients and normalize units at import.
   NOTHING`). Resumable; skips foods that already have a translation (e.g.
   BLS German for `de`). Reads `$DEEPL_API_KEY` / `$SUPABASE_DB_URL`.
 
-- **`shared/review_measure_units.py`** — takes one locale's
-  `measure_unit_translation` rows from machine output to `source='verified'`
-  via a CSV a native speaker can edit without touching SQL. `--export`
-  writes `review/measure_units_<locale>.csv` (English name, current
+- **`shared/review_translations.py`** — takes one locale's machine
+  translations to `source='verified'` via a CSV a native speaker can edit
+  without touching SQL. Two vocabularies:
+
+  - `--target portions` — `food_portion_translation.portion_description`
+    (`1 cup`, `1 slice`). **This is the one that matters**: it is what a user
+    reads, and `food_summary.serving_size` is built from it.
+  - `--target units` — `measure_unit_translation.name` (`cup`, `slice`).
+    Reaches only 0.5% of portions, because `measure_unit` is `undetermined`
+    for 36,495 of 36,682 rows.
+
+  `--export` writes `review/<target>_<locale>.csv` (English string, current
   translation, a blank `corrected` column, and a note on the ambiguous ones);
-  `--apply` applies the corrections and promotes the locale. Writing `-` in
-  `corrected` deletes the row, so a unit with no good word falls back rather
-  than showing a bad guess. `--dry-run` prints the plan and writes nothing.
+  `--apply` applies corrections and promotes the locale. `-` in `corrected`
+  deletes the row, so an entry with no good word falls back rather than
+  showing a bad guess. `--dry-run` prints the plan and writes nothing.
+
+  Distinct strings only: `1 cup` is 3,056 portion rows and appears once.
 
   **Promotion is per locale and all-or-nothing.** `verified` claims somebody
   read the list, so `--apply` refuses a CSV that has lost rows and names what
@@ -145,9 +155,9 @@ All map to the 24 canonical nutrients and normalize units at import.
   it records where the text came from, not whether it is trusted.
 
 ### Testing
-- **`shared/test_review_measure_units.py`** — exercises that completeness
+- **`shared/test_review_translations.py`** — exercises that completeness
   guard on its own, without a database. Run it directly:
-  `python3 scripts/shared/test_review_measure_units.py`.
+  `python3 scripts/shared/test_review_translations.py`.
 - **`test_against_source.py`** — samples random foods from Supabase (or a
   converted CSV dir with `--csv-dir`) and validates each against the raw
   source files: description, short_title, all 24 nutrients (re-derived via
