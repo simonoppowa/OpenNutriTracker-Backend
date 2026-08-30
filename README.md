@@ -129,7 +129,25 @@ All map to the 24 canonical nutrients and normalize units at import.
   NOTHING`). Resumable; skips foods that already have a translation (e.g.
   BLS German for `de`). Reads `$DEEPL_API_KEY` / `$SUPABASE_DB_URL`.
 
+- **`shared/review_measure_units.py`** — takes one locale's
+  `measure_unit_translation` rows from machine output to `source='verified'`
+  via a CSV a native speaker can edit without touching SQL. `--export`
+  writes `review/measure_units_<locale>.csv` (English name, current
+  translation, a blank `corrected` column, and a note on the ambiguous ones);
+  `--apply` applies the corrections and promotes the locale. Writing `-` in
+  `corrected` deletes the row, so a unit with no good word falls back rather
+  than showing a bad guess. `--dry-run` prints the plan and writes nothing.
+
+  **Promotion is per locale and all-or-nothing.** `verified` claims somebody
+  read the list, so `--apply` refuses a CSV that has lost rows and names what
+  is missing — otherwise a half-finished pass and a finished one are
+  indistinguishable afterwards. `ai_generated` stays `true` after promotion:
+  it records where the text came from, not whether it is trusted.
+
 ### Testing
+- **`shared/test_review_measure_units.py`** — exercises that completeness
+  guard on its own, without a database. Run it directly:
+  `python3 scripts/shared/test_review_measure_units.py`.
 - **`test_against_source.py`** — samples random foods from Supabase (or a
   converted CSV dir with `--csv-dir`) and validates each against the raw
   source files: description, short_title, all 24 nutrients (re-derived via
