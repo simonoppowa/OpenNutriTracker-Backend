@@ -537,8 +537,55 @@ grant execute on function search_food_translation(text, text, int)
     to anon, authenticated;
 grant execute on function food_summary_by_ids(bigint[], text[])
     to anon, authenticated;
+-- Every usable portion a food has, so the app can offer a choice rather than
+-- the single one food_summary picks. Ordered like that lateral pick, so row 1
+-- is the default the app already uses. `localized` says whether `label` came
+-- from a verified translation or is the English text, because the two are
+-- indistinguishable as strings.
+create or replace function portions_by_food_ids(
+    ids  bigint[],
+    loc  text
+)
+returns table (
+    food_id      bigint,
+    seq          int,
+    label        text,
+    localized    boolean,
+    gram_weight  numeric
+)
+language sql
+stable
+as $$
+    select
+        fp.food_id,
+        row_number() over (
+            partition by fp.food_id
+            order by fp.seq_num nulls last, fp.id
+        )::int,
+        coalesce(t.portion_description, fp.portion_description),
+        t.portion_description is not null,
+        fp.gram_weight
+    from food_portion fp
+    join unnest(ids) as w(id) on w.id = fp.food_id
+    left join food_portion_translation t
+           on t.food_portion_id = fp.id
+          and t.locale = loc
+          and t.source = 'verified'
+          and t.portion_description is not null
+          and btrim(t.portion_description) <> ''
+    where fp.portion_description is not null
+      and fp.portion_description <> 'Quantity not specified'
+      and fp.gram_weight is not null
+      and fp.gram_weight > 0
+      and fp.portion_description !~* '\mNFS\M|\mNS as to\M|\myields\M|^Guideline amount'
+    order by fp.food_id, fp.seq_num nulls last, fp.id;
+$$;
+
 revoke execute on function portion_labels_by_food_ids(bigint[], text) from public;
 grant execute on function portion_labels_by_food_ids(bigint[], text)
+    to anon, authenticated;
+revoke execute on function portions_by_food_ids(bigint[], text) from public;
+grant execute on function portions_by_food_ids(bigint[], text)
     to anon, authenticated;
 
 -- ---------- 8. Storage --------------------------------------
