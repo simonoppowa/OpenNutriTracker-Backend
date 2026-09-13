@@ -131,6 +131,7 @@ erDiagram
         text serving_size "NULL"
         numeric energy_kcal_100 "NULL"
         numeric macros_and_micros_100 "NULL - all 24 MealNutrimentsDBO columns (dart: double?)"
+        bool has_portion "NN - food_has_deliverable_portion(food_id) at refresh; the app's search cut reads it"
     }
 
     %% ---------- LOCALIZATION (i18n) ----------

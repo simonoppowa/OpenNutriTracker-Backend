@@ -260,6 +260,30 @@ create index if not exists idx_food_tag_tag on food_tag (tag_id);
 -- Nutrient pivot follows MealNutrimentsDBO; canonical nutrient ids are
 -- fixed by fdc_to_ont_csv.py (1=energy ... 24=niacin).
 
+-- True when portions_by_food_ids (6b) would return at least one row for the
+-- food: the same predicate, kept in one place so the two cannot drift.
+-- Defined ahead of the view because the view stores it as has_portion
+-- (migrations 2026-09-12_search_rpc_order_by_portions.sql and
+-- 2026-09-13_food_summary_has_portion.sql).
+create or replace function food_has_deliverable_portion(fid bigint)
+returns boolean
+language sql
+stable
+security invoker
+set search_path = public, pg_temp
+as $$
+    select exists (
+        select 1
+        from food_portion fp
+        where fp.food_id = fid
+          and fp.portion_description is not null
+          and fp.portion_description <> 'Quantity not specified'
+          and fp.gram_weight is not null
+          and fp.gram_weight > 0
+          and fp.portion_description !~* '\mNFS\M|\mNS as to\M|\myields\M|^Guideline amount'
+    )
+$$;
+
 create materialized view if not exists food_summary as
 select
     f.id                                   as food_id,
@@ -317,7 +341,12 @@ select
     n.vitamin_d_100,
     n.vitamin_b6_100,
     n.vitamin_b12_100,
-    n.niacin_100
+    n.niacin_100,
+    -- True when portions_by_food_ids would return at least one row for this
+    -- food — the same helper the search order has used since 2026-09-12, now
+    -- stored so the app's cut can read it (#1190). Never NULL: it is an
+    -- EXISTS. Recomputed on every refresh.
+    food_has_deliverable_portion(f.id)     as has_portion
 from food f
 left join food_category fc on fc.id = f.food_category_id
 left join market_acquisition ma on ma.food_id = f.id   -- brand + barcode
@@ -404,10 +433,15 @@ create index if not exists idx_food_summary_name_fts
 -- ISP and TLS fingerprint. Removing that pairing is the whole point.
 -- App issue simonoppowa/OpenNutriTracker#882.
 --
--- Ranking deliberately stays in the app. These return the same unordered
--- candidate pool the PostgREST queries returned, so results are unchanged
--- by the move — `ts_rank` ordering here would be a different change, made
--- for a different reason, and would have to be argued on its own merits.
+-- Ranking stays in the app; what these decide is which hundred rows reach
+-- it. Since 2026-09-12_search_rpc_order_by_portions.sql and
+-- 2026-09-13_search_rpc_order_title_first.sql the pool is ordered: records
+-- with a deliverable portion first (has_portion, stored on the view since
+-- 2026-09-13_food_summary_has_portion.sql), then the records whose title —
+-- the text before the first comma — is the term, then the shortest
+-- description, then food_id. Without it a large family never reached the
+-- app at all ("Potato, NFS" was rank 128 of 712 matches for potato). No
+-- `ts_rank`: relevance among the hundred is the app's.
 
 create or replace function search_food_summary(
     term      text,
@@ -425,25 +459,42 @@ as $$
     where to_tsvector('english', fs.name)
           @@ websearch_to_tsquery('english', term)
       and (sources is null or fs.source = any (sources))
+    order by fs.has_portion desc,
+             (lower(btrim(split_part(fs.name, ',', 1))) = lower(btrim(term))) desc,
+             length(fs.name),
+             fs.food_id
     limit greatest(max_rows, 0)
 $$;
 
+-- has_portion is the view's stored flag by a left join (coalesced to false;
+-- every food_translation row has a summary row, and the FK to food keeps it
+-- so), so the two hops of a localized search cannot disagree on it. A
+-- database that still has the 39-column view and the three-column version
+-- of this function needs 2026-09-13_food_summary_has_portion.sql, which
+-- recreates both: CREATE OR REPLACE cannot change a return type, and IF NOT
+-- EXISTS leaves the view as it is.
 create or replace function search_food_translation(
     term      text,
     loc       text,
     max_rows  int default 100
 )
-returns table (food_id bigint, description text, source text)
+returns table (food_id bigint, description text, source text, has_portion boolean)
 language sql
 stable
 security invoker
 set search_path = public, pg_temp
 as $$
-    select ft.food_id, ft.description, ft.source
+    select ft.food_id, ft.description, ft.source,
+           coalesce(fs.has_portion, false) as has_portion
     from food_translation ft
+    left join food_summary fs on fs.food_id = ft.food_id
     where ft.locale = loc
       and to_tsvector('simple', ft.description)
           @@ websearch_to_tsquery('simple', term)
+    order by coalesce(fs.has_portion, false) desc,
+             (lower(btrim(split_part(ft.description, ',', 1))) = lower(btrim(term))) desc,
+             length(ft.description),
+             ft.food_id
     limit greatest(max_rows, 0)
 $$;
 
@@ -536,6 +587,11 @@ grant execute on function search_food_summary(text, text[], int)
 grant execute on function search_food_translation(text, text, int)
     to anon, authenticated;
 grant execute on function food_summary_by_ids(bigint[], text[])
+    to anon, authenticated;
+-- The helper is called at the view's refresh and, until 2026-09-13, from
+-- inside the two search functions; it is not an API of its own.
+revoke execute on function food_has_deliverable_portion(bigint) from public;
+grant execute on function food_has_deliverable_portion(bigint)
     to anon, authenticated;
 -- Every usable portion a food has, so the app can offer a choice rather than
 -- the single one food_summary picks. Ordered like that lateral pick, so row 1
