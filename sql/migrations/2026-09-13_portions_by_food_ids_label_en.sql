@@ -28,11 +28,15 @@
 -- function"). So the function is dropped and recreated inside one
 -- transaction — no caller can observe the gap — and the revoke/grant is
 -- issued again, because the privileges go with the dropped function and a
--- fresh one is executable by PUBLIC. That is the pair
--- 2026-08-30_portions_by_food_ids.sql issued when it created the function,
--- and it leaves the ACL as it is today: postgres, anon, authenticated,
--- service_role. Nothing depends on the function (no view, trigger or
--- SQL-standard function body references it), so the plain DROP succeeds.
+-- fresh one takes the schema's default ACL. On this database that default
+-- (pg_default_acl for postgres in public) already grants execute to anon,
+-- authenticated and service_role and nothing to PUBLIC, so the pair is a
+-- no-op here; it is re-issued so the outcome does not rest on that setting.
+-- That is the pair 2026-08-30_portions_by_food_ids.sql issued when it
+-- created the function, and it leaves the ACL exactly as it is today:
+-- postgres, anon, authenticated, service_role. Nothing depends on the
+-- function (no view, trigger or SQL-standard function body references it),
+-- so the plain DROP succeeds.
 --
 -- Measured before this was written (the body below run as a plain SELECT
 -- against production, read-only, over the first five results each of
