@@ -544,6 +544,13 @@ grant execute on function food_summary_by_ids(bigint[], text[])
 -- indistinguishable as strings. `label_en` is always the English text, so a
 -- portion word the AI model was told to emit in English has something to
 -- match in every locale; it equals `label` exactly when `localized` is false.
+--
+-- This file bootstraps an empty database. On one that already holds the
+-- five-column version of this function, `create or replace` fails with
+-- "cannot change return type of existing function": run
+-- 2026-09-13_portions_by_food_ids_label_en.sql instead, which drops and
+-- recreates it in one transaction — the same rule search_food_translation
+-- carries above for 2026-09-13_food_summary_has_portion.sql.
 create or replace function portions_by_food_ids(
     ids  bigint[],
     loc  text

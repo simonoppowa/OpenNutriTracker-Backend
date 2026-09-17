@@ -28,15 +28,16 @@
 -- function"). So the function is dropped and recreated inside one
 -- transaction — no caller can observe the gap — and the revoke/grant is
 -- issued again, because the privileges go with the dropped function and a
--- fresh one takes the schema's default ACL. On this database that default
--- (pg_default_acl for postgres in public) already grants execute to anon,
--- authenticated and service_role and nothing to PUBLIC, so the pair is a
--- no-op here; it is re-issued so the outcome does not rest on that setting.
--- That is the pair 2026-08-30_portions_by_food_ids.sql issued when it
--- created the function, and it leaves the ACL exactly as it is today:
--- postgres, anon, authenticated, service_role. Nothing depends on the
--- function (no view, trigger or SQL-standard function body references it),
--- so the plain DROP succeeds.
+-- fresh one takes the schema's default ACL. The grant names every role the
+-- live function is executable by today — anon, authenticated and
+-- service_role (pg_proc.proacl, read 2026-09-17) — so the ACL after this
+-- run is the one before it whatever pg_default_acl says. On this database
+-- that default already grants the same three and nothing to PUBLIC, which is
+-- how service_role got there: 2026-08-30_portions_by_food_ids.sql granted
+-- only anon and authenticated and the default supplied the third. Naming it
+-- here is what makes that deliberate rather than incidental. Nothing depends
+-- on the function (no view, trigger or SQL-standard function body references
+-- it), so the plain DROP succeeds.
 --
 -- Measured before this was written (the body below run as a plain SELECT
 -- against production, read-only, over the first five results each of
@@ -116,6 +117,6 @@ $$;
 
 revoke execute on function portions_by_food_ids(bigint[], text) from public;
 grant execute on function portions_by_food_ids(bigint[], text)
-    to anon, authenticated;
+    to anon, authenticated, service_role;
 
 commit;
