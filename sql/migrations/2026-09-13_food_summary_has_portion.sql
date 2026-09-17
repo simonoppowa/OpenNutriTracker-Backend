@@ -233,9 +233,12 @@ create index idx_food_summary_barcode   -- barcode scan lookup (branded/OFF)
 create index idx_food_summary_name_fts  -- what search_food_summary runs on
     on food_summary using gin (to_tsvector('english', name));
 
--- Materialized views have no RLS; restrict via grants instead.
-revoke all on food_summary from anon, authenticated;
-grant select on food_summary to anon, authenticated;
+-- Materialized views have no RLS; restrict via grants instead. The live view
+-- is readable by service_role as well (pg_class.relacl, read 2026-09-17),
+-- which the 2026-07-13 precedent left to pg_default_acl; named here so the
+-- ACL after this run does not rest on that setting.
+revoke all on food_summary from anon, authenticated, service_role;
+grant select on food_summary to anon, authenticated, service_role;
 
 create function search_food_summary(
     term      text,
@@ -302,16 +305,19 @@ as $$
 $$;
 
 -- Recreated functions come back executable by PUBLIC; the grant is only
--- meaningful after the revoke.
+-- meaningful after the revoke. service_role is named because the live
+-- functions are executable by it today (pg_proc.proacl) only through
+-- pg_default_acl, and a drop discards the object ACL — same reasoning as
+-- 2026-09-13_portions_by_food_ids_label_en.sql.
 revoke execute on function search_food_summary(text, text[], int) from public;
 revoke execute on function search_food_translation(text, text, int) from public;
 revoke execute on function food_summary_by_ids(bigint[], text[]) from public;
 grant execute on function search_food_summary(text, text[], int)
-    to anon, authenticated;
+    to anon, authenticated, service_role;
 grant execute on function search_food_translation(text, text, int)
-    to anon, authenticated;
+    to anon, authenticated, service_role;
 grant execute on function food_summary_by_ids(bigint[], text[])
-    to anon, authenticated;
+    to anon, authenticated, service_role;
 
 commit;
 
