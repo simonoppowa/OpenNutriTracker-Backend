@@ -597,7 +597,16 @@ grant execute on function food_has_deliverable_portion(bigint)
 -- the single one food_summary picks. Ordered like that lateral pick, so row 1
 -- is the default the app already uses. `localized` says whether `label` came
 -- from a verified translation or is the English text, because the two are
--- indistinguishable as strings.
+-- indistinguishable as strings. `label_en` is always the English text, so a
+-- portion word the AI model was told to emit in English has something to
+-- match in every locale; it equals `label` exactly when `localized` is false.
+--
+-- This file bootstraps an empty database. On one that already holds the
+-- five-column version of this function, `create or replace` fails with
+-- "cannot change return type of existing function": run
+-- 2026-09-13_portions_by_food_ids_label_en.sql instead, which drops and
+-- recreates it in one transaction — the same rule search_food_translation
+-- carries above for 2026-09-13_food_summary_has_portion.sql.
 create or replace function portions_by_food_ids(
     ids  bigint[],
     loc  text
@@ -607,7 +616,8 @@ returns table (
     seq          int,
     label        text,
     localized    boolean,
-    gram_weight  numeric
+    gram_weight  numeric,
+    label_en     text
 )
 language sql
 stable
@@ -620,7 +630,8 @@ as $$
         )::int,
         coalesce(t.portion_description, fp.portion_description),
         t.portion_description is not null,
-        fp.gram_weight
+        fp.gram_weight,
+        fp.portion_description
     from food_portion fp
     join unnest(ids) as w(id) on w.id = fp.food_id
     left join food_portion_translation t
