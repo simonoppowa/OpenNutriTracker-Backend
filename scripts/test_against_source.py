@@ -3,9 +3,9 @@
 
 Samples random foods from the database (or from converted CSVs) and, for
 each, re-derives the expected values straight from the raw source
-downloads (FDC, BLS, CIQUAL, Fineli) - independently of the converters -
-then compares. Catches import bugs, unit-conversion drift, and truncation
-that a converter self-test would miss.
+downloads (FDC, BLS, CIQUAL, Fineli, Frida) - independently of the
+converters - then compares. Catches import bugs, unit-conversion drift,
+and truncation that a converter self-test would miss.
 
 Per sampled food it checks:
     * description        == raw source name
@@ -20,6 +20,10 @@ Per sampled food it checks:
         - CIQUAL: French 'fr' == raw 'alim_nom_fr'
         - Fineli: Finnish 'fi' / Swedish 'sv' == raw foodname_FI /
           foodname_SV (sentence-cased like the converter)
+        - Frida: Danish 'da' == raw 'FødevareNavn'
+    * Frida nutrients are re-derived from the wide 'Data_Table' sheet (the
+      converter reads the long 'Data_Normalised' sheet), vitamin A RAE
+      recomputed here
 
 By default it checks the Supabase tables (food + food_summary +
 food_translation) against the raw source data. Pass --csv-dir to instead
@@ -43,7 +47,11 @@ Usage:
     python test_against_source.py --csv-dir out/fineli --source-dir source \
         --source fineli --samples 100
 
-Requires: psycopg2-binary (for --db), openpyxl (for BLS).
+    # offline: validate the Frida CSVs against ./source/frida:
+    python test_against_source.py --csv-dir out/frida --source-dir source \
+        --source frida --samples 100
+
+Requires: psycopg2-binary (for --db), openpyxl (for BLS / Frida).
 Exit code 0 = all checks passed, 1 = at least one mismatch.
 """
 
@@ -61,6 +69,7 @@ sys.path.insert(0, str(HERE / "fdc"))
 sys.path.insert(0, str(HERE / "bls"))
 sys.path.insert(0, str(HERE / "ciqual"))
 sys.path.insert(0, str(HERE / "fineli"))
+sys.path.insert(0, str(HERE / "frida"))
 sys.path.insert(0, str(HERE / "shared"))
 
 from fdc_to_ont_csv import (CANONICAL_NUTRIENTS, SOURCE_BY_DATA_TYPE,  # noqa: E402
@@ -73,9 +82,11 @@ from fineli_to_ont_csv import (FINELI_MAPPING,                         # noqa: E
                                parse_amount as fineli_amount,
                                sentence_case as fineli_case,
                                short_title as fineli_short)
+from frida_to_ont_csv import (FRIDA_MAPPING,                           # noqa: E402
+                              short_title as frida_short)
 
 TOL = 0.02          # 2% relative tolerance for floats (rounding at import)
-SOURCES = ["fdc", "bls", "ciqual", "fineli"]     # --source choices
+SOURCES = ["fdc", "bls", "ciqual", "fineli", "frida"]  # --source choices
 
 # canonical nutrient id -> food_summary column name (fixed by schema.sql)
 NUTRIENT_COLUMN = {
@@ -306,6 +317,58 @@ def build_fineli_index(source_dir: Path):
     return idx
 
 
+# ----------------------------------------------------------------- Frida origin
+def build_frida_index(source_dir: Path):
+    """Frida FoodID -> {name_en, name_da, nutrients:{canonical_id: amount}}
+    from the wide 'Data_Table' sheet (header rows: Danish name, English
+    name, unit, ParameterID; then one row per food), applying FRIDA_MAPPING
+    priority + unit factors. Vitamin A RAE is recomputed from Frida's RE
+    (12) = retinol (225) + beta-carotene (303)/6 and RAE = retinol +
+    beta-carotene/12, independently of the converter."""
+    try:
+        import openpyxl
+    except ImportError:
+        sys.exit("error: openpyxl needed for Frida validation")
+    hits = sorted(p for p in (source_dir / "frida").rglob("*.xlsx")
+                  if "dataset" in p.name.lower())
+    if not hits:
+        return {}
+    wb = openpyxl.load_workbook(hits[-1], read_only=True)
+    rows = list(wb["Data_Table"].iter_rows(values_only=True))
+    wb.close()
+    hdr = next(i for i, r in enumerate(rows)
+               if str(r[2] or "").startswith("\u2193FoodID"))
+    col = {str(p): i for i, p in enumerate(rows[hdr]) if isinstance(p, int)}
+
+    def get(row, pid):
+        i = col.get(pid)
+        v = row[i] if i is not None else None
+        return float(v) if isinstance(v, (int, float)) else None
+
+    idx = {}
+    for row in rows[hdr + 1:]:
+        if not isinstance(row[2], int):
+            continue
+        nutrients = {}
+        for nid, options in FRIDA_MAPPING:
+            for pid, factor, _unit in options:
+                v = get(row, pid)
+                if v is not None:
+                    nutrients[nid] = round(v * factor, 6)
+                    break
+        ret, bc, re_ = get(row, "225"), get(row, "303"), get(row, "12")
+        if ret is None and re_ is not None and bc is not None:
+            ret = re_ - bc / 6                    # RE = retinol + bc/6
+        if bc is None and re_ is not None and ret is not None:
+            bc = (re_ - ret) * 6
+        if ret is not None and bc is not None:
+            nutrients[19] = round(max(ret + bc / 12, 0.0), 6)
+        idx[str(row[2])] = {"name_da": str(row[0] or "").strip(),
+                            "name_en": str(row[1] or "").strip(),
+                            "nutrients": nutrients}
+    return idx
+
+
 # ----------------------------------------------------------------- actual rows
 def sample_from_db(db: str, n: int, sources: list[str]):
     import psycopg2
@@ -386,6 +449,11 @@ def preflight(rows, source_dir: Path) -> None:
         sys.exit(f"error: no Fineli component_value.csv under "
                  f"{source_dir}/fineli - wrong --source-dir? run "
                  f"download_fineli.py first.")
+    if "frida" in fams and not any(
+            "dataset" in p.name.lower()
+            for p in (source_dir / "frida").rglob("*.xlsx")):
+        sys.exit(f"error: no Frida *Dataset*.xlsx under {source_dir}/frida - "
+                 f"wrong --source-dir? run download_frida.py first.")
 
 
 def validate(rows, source_dir: Path, verbose: bool):
@@ -394,6 +462,7 @@ def validate(rows, source_dir: Path, verbose: bool):
     bls_idx = None
     ciqual_idx = None
     fineli_idx = None
+    frida_idx = None
     checks = 0
     fails = 0
     per_source = {}          # source -> [checks, fails]
@@ -506,6 +575,23 @@ def validate(rows, source_dir: Path, verbose: bool):
             check_native(r["source"], code, r["native"],
                          {loc: fineli_case(raw[f"name_{loc}"])
                           for loc in ("fi", "sv") if raw[f"name_{loc}"]})
+        elif fam == "frida":
+            if frida_idx is None:
+                if verbose:
+                    print("  (loading Frida raw xlsx ...)")
+                frida_idx = build_frida_index(source_dir)
+            raw = frida_idx.get(code)
+            if not raw:
+                check(False, r["source"], code, "in-source", "missing", "present")
+                continue
+            exp_desc = raw["name_en"] or raw["name_da"]
+            check(r["description"] == exp_desc, r["source"], code,
+                  "description", r["description"], exp_desc)
+            check(r["short_title"] == frida_short(exp_desc), r["source"], code,
+                  "short_title", r["short_title"], frida_short(exp_desc))
+            check_nutrients(r["source"], code, r["nutrients"], raw["nutrients"])
+            check_native(r["source"], code, r["native"],
+                         {"da": raw["name_da"]})
     return checks, fails, per_source, per_field
 
 
@@ -550,7 +636,8 @@ def main() -> None:
     print("  sampled per source: "
           + ", ".join(f"{s}={n}" for s, n in sorted(by_src.items())))
     print("  checks per food: description, short_title, all 24 nutrients"
-          " (+ native names: de for BLS, fr for CIQUAL, fi/sv for Fineli)")
+          " (+ native names: de for BLS, fr for CIQUAL, fi/sv for Fineli,"
+          " da for Frida)")
 
     checks, fails, per_source, per_field = validate(
         rows, args.source_dir, args.verbose)

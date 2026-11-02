@@ -13,6 +13,7 @@ Sources (--source, repeatable; default: fdc bls):
     fineli  Fineli, Finnish food composition database (THL, CC BY 4.0) -
           fineli.fi may refuse scripted downloads, then fetch the zip in
           a browser and run fineli/download_fineli.py --zip <file>
+    frida   Danish Food Composition Database / Frida, DTU (CC BY 4.0)
     Only fdc and bls run by default; the others are opt-in (name them).
 
 Actions (--action, repeatable; default: all):
@@ -43,7 +44,8 @@ Notes
   import in a run truncates; later ones append.
 * schema + import need a connection string (--db or $SUPABASE_DB_URL),
   session pooler (port 5432). Requires: pip install psycopg2-binary
-  (and openpyxl for BLS convert).
+  (and openpyxl for BLS / Frida convert). Frida, like BLS, imports
+  after FDC (it reuses FDC's nutrient table).
 """
 
 from __future__ import annotations
@@ -59,7 +61,7 @@ REPO = ROOT.parent
 SCHEMA_SQL = REPO / "sql" / "schema.sql"
 
 # canonical source order (FDC first: the others need FDC's nutrient table)
-SOURCE_ORDER = ["fdc", "bls", "ciqual", "fineli"]
+SOURCE_ORDER = ["fdc", "bls", "ciqual", "fineli", "frida"]
 # the default run; every other source is opt-in via --source
 DEFAULT_SOURCES = ["fdc", "bls"]
 ALL_ACTIONS = ["download", "convert", "schema", "import"]
@@ -94,6 +96,8 @@ def do_download(src: str, source_dir: Path, datasets: list[str] | None,
     elif src == "fineli":
         run(py(ROOT / "fineli" / "download_fineli.py", "--output", source_dir),
             dry)
+    elif src == "frida":
+        run(py(ROOT / "frida" / "download_frida.py", "--output", source_dir), dry)
 
 
 def do_convert(src: str, source_dir: Path, out_dir: Path, dry: bool) -> None:
@@ -109,6 +113,9 @@ def do_convert(src: str, source_dir: Path, out_dir: Path, dry: bool) -> None:
     elif src == "fineli":
         run(py(ROOT / "fineli" / "fineli_to_ont_csv.py",
                "--source-dir", source_dir / "fineli", "--output", out_dir), dry)
+    elif src == "frida":
+        run(py(ROOT / "frida" / "frida_to_ont_csv.py",
+               "--source-dir", source_dir / "frida", "--output", out_dir), dry)
 
 
 def do_schema(db: str, dry: bool) -> None:

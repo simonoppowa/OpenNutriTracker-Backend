@@ -6,9 +6,9 @@ making changes.
 ## What this project is
 
 A Supabase backend that ingests food reference data from several national
-databases (USDA FDC, German BLS, Indian INDB, Brazilian TBCA, French
-CIQUAL, Finnish Fineli) into one canonical schema, consumed by the Flutter
-app [OpenNutriTracker](https://github.com/simonoppowa/OpenNutriTracker).
+databases (USDA FDC, German BLS, Indian INDB, Brazilian TBCA, French CIQUAL,
+Finnish Fineli, Danish Frida) into one canonical schema, consumed by the
+Flutter app [OpenNutriTracker](https://github.com/simonoppowa/OpenNutriTracker).
 Each source is downloaded, converted to a shared set of CSVs, and
 bulk-loaded. The app reads only the `food_summary` materialized view plus
 `food_translation`.
@@ -27,28 +27,28 @@ bulk-loaded. The app reads only the `food_summary` materialized view plus
   `scripts/fdc/fdc_to_ont_csv.py` (`CANONICAL_NUTRIENTS`); every converter
   maps its source's components onto it.
 - **`nutrient_mapping.source` is an import FAMILY** (`fdc`, `bls`, `indb`,
-  `tbca`, `ciqual`, `fineli`), NOT a `food_source.code`, and has no FK —
-  `fdc` covers `fdc_foundation` / `fdc_sr_legacy` / `fdc_survey` /
+  `tbca`, `ciqual`, `fineli`, `frida`), NOT a `food_source.code`, and has no
+  FK — `fdc` covers `fdc_foundation` / `fdc_sr_legacy` / `fdc_survey` /
   `fdc_branded`.
 
 ## Fixed conventions
 
 - **`food.id` ranges** (avoid collisions): FDC = raw `fdc_id` (<10M),
-  BLS 10M+, INDB 20M+, TBCA 30M+, CIQUAL 40M + alim_code, Fineli 50M+
-  (each new source takes its own free 10M block).
+  BLS 10M+, INDB 20M+, TBCA 30M+, CIQUAL 40M + alim_code, Fineli 50M+,
+  Frida 60M + FoodID (each new source takes its own free 10M block).
   `food_nutrient` id bases: BLS 20M+, INDB 30M+, TBCA 40M+, CIQUAL 50M+,
-  Fineli 60M+.
+  Fineli 60M+, Frida 70M+.
   `food_portion` id bases: INDB 20M+, Fineli 50M+.
 - **Category ids**: FDC 1–28, WWEIA/FNDDS 1002–9999, TBCA 30001+,
   CIQUAL 40000 + sub-group code (40101–41104), Fineli 50001+ (food-use
-  classes, `source='fineli'`).
+  classes, `source='fineli'`), Frida 60000 + FoodGroupID.
 - **`food_nutrient.origin`** vocabulary: `analysis | literature |
   calculated | label` (empty when unknown).
 - **i18n**: `food.description` is always **English**. Translations live in
   `food_translation (food_id, locale, description, source, ai_generated)`
   with `source ∈ native | machine | community | verified`. Native names
-  (BLS German, CIQUAL French, Fineli Finnish/Swedish) are never
-  overwritten by machine translation; MT/LLM output sets
+  (BLS German, CIQUAL French, Fineli Finnish/Swedish, Frida Danish) are
+  never overwritten by machine translation; MT/LLM output sets
   `ai_generated = true`.
 - **Nullable = honest**: a missing nutrient stays `NULL` (maps to dart
   `double?`), never `0`. Known gaps to respect: BLS has no trans fat; INDB
@@ -59,11 +59,15 @@ bulk-loaded. The app reads only the `food_summary` materialized view plus
   `< x` (below quantification limit) are measurements, stored as 0 with
   `max = x`; only `-` is missing (NULL). Fineli covers all 24 (trans
   fat included); a few foods lack single components (e.g. 6 spices/water
-  ship no values at all) and stay NULL.
+  ship no values at all) and stay NULL. Frida covers all 24 but ships
+  vitamin A as RE (retinol + β-carotene/6): the converter derives µg RAE
+  from any two of RE/retinol/β-carotene and leaves RE-only foods NULL;
+  vitamin D includes 25-OH-D ×2.5; niacin is preformed (not NE).
 - **Unit discipline**: converters normalize to canonical units at import
   and document every factor in `nutrient_mapping` (e.g. BLS B6 µg→mg
   ×0.001; INDB SFA/MUFA/PUFA mg→g ×0.001; INDB vitamin D = D2 + D3;
-  Fineli energy kJ→kcal ×1/4.184 — the package has no kcal component).
+  Fineli energy kJ→kcal ×1/4.184 — the package has no kcal component;
+  Frida kJ→kcal ×1/4.184 fallback only).
 
 ## Repo map
 
@@ -79,6 +83,7 @@ scripts/
   tbca/ tbca_to_ont_csv.py                    (scraped TBCA CSVs)
   ciqual/ download_ciqual.py, ciqual_to_ont_csv.py (ANSES CIQUAL XML)
   fineli/ download_fineli.py, fineli_to_ont_csv.py  (Fineli CSV zip)
+  frida/ download_frida.py, frida_to_ont_csv.py (Danish FCDB xlsx, DTU Data)
   shared/ import_fdc.py         psycopg2 COPY loader (all sources)
           translate_all.py      DeepL, DB-driven, all sources, per-source CSVs
   run_pipeline.py               orchestrates download/convert/schema/import
@@ -139,7 +144,11 @@ des aliments Ciqual", DOI 10.57745/RDMHWY); Fineli = CC BY 4.0 (attribute
 Finnish Institute for Health and Welfare (THL), Fineli, release from
 `descript.txt`). fineli.fi sits behind a bot-protection challenge — never
 try to get around it; `download_fineli.py --zip` takes a browser-saved
-package. Always state licensing when adding a source.
+package; Frida (Danish Food Composition Database) dataset = CC BY 4.0
+(attribute "The Danish Food Composition Database (https://fcdb.fooddata.dk),
+version 6.1, May 2026, National Food Institute, Technical University of
+Denmark", https://doi.org/10.11583/DTU.32312844; its documentation PDFs are
+© DTU, not CC BY). Always state licensing when adding a source.
 
 ## Style
 
