@@ -3,8 +3,8 @@
 
 Samples random foods from the database (or from converted CSVs) and, for
 each, re-derives the expected values straight from the raw source
-downloads (FDC, BLS, CIQUAL, Fineli, Frida) - independently of the
-converters - then compares. Catches import bugs, unit-conversion drift,
+downloads (FDC, BLS, CIQUAL, Fineli, Frida, Matvaretabellen) -
+independently of the converters - then compares. Catches import bugs, unit-conversion drift,
 and truncation that a converter self-test would miss.
 
 Per sampled food it checks:
@@ -21,6 +21,7 @@ Per sampled food it checks:
         - Fineli: Finnish 'fi' / Swedish 'sv' == raw foodname_FI /
           foodname_SV (sentence-cased like the converter)
         - Frida: Danish 'da' == raw 'FødevareNavn'
+        - MVT: Bokmaal 'nb' == raw nb-foods.json name
     * Frida nutrients are re-derived from the wide 'Data_Table' sheet (the
       converter reads the long 'Data_Normalised' sheet), vitamin A RAE
       recomputed here
@@ -51,6 +52,10 @@ Usage:
     python test_against_source.py --csv-dir out/frida --source-dir source \
         --source frida --samples 100
 
+    # Matvaretabellen (raw JSON under source/mvt):
+    python test_against_source.py --csv-dir out/mvt --source-dir source \
+        --source mvt --samples 200
+
 Requires: psycopg2-binary (for --db), openpyxl (for BLS / Frida).
 Exit code 0 = all checks passed, 1 = at least one mismatch.
 """
@@ -70,6 +75,7 @@ sys.path.insert(0, str(HERE / "bls"))
 sys.path.insert(0, str(HERE / "ciqual"))
 sys.path.insert(0, str(HERE / "fineli"))
 sys.path.insert(0, str(HERE / "frida"))
+sys.path.insert(0, str(HERE / "mvt"))
 sys.path.insert(0, str(HERE / "shared"))
 
 from fdc_to_ont_csv import (CANONICAL_NUTRIENTS, SOURCE_BY_DATA_TYPE,  # noqa: E402
@@ -84,9 +90,12 @@ from fineli_to_ont_csv import (FINELI_MAPPING,                         # noqa: E
                                short_title as fineli_short)
 from frida_to_ont_csv import (FRIDA_MAPPING,                           # noqa: E402
                               short_title as frida_short)
+from mvt_to_ont_csv import (MVT_MAPPING, norm_unit as mvt_norm_unit,   # noqa: E402
+                            short_title as mvt_short)
 
 TOL = 0.02          # 2% relative tolerance for floats (rounding at import)
-SOURCES = ["fdc", "bls", "ciqual", "fineli", "frida"]  # --source choices
+# --source choices (DB mode)
+SOURCES = ["fdc", "bls", "ciqual", "fineli", "frida", "mvt"]
 
 # canonical nutrient id -> food_summary column name (fixed by schema.sql)
 NUTRIENT_COLUMN = {
@@ -369,6 +378,46 @@ def build_frida_index(source_dir: Path):
     return idx
 
 
+# ----------------------------------------------------------------- MVT origin
+def build_mvt_index(source_dir: Path):
+    """MVT foodId -> {name_en, name_nb, nutrients:{canonical_id: amount}}.
+    Reads the raw en/nb JSON exports and applies MVT_MAPPING (code,
+    expected unit, unit_factor, per-nutrient priority) to each food."""
+    import json
+    base = source_subdir(source_dir, "mvt")
+    en_path, nb_path = base / "en-foods.json", base / "nb-foods.json"
+    if not en_path.exists():
+        return {}
+
+    def foods(path: Path) -> list:
+        return json.loads(path.read_text(encoding="utf-8"))["foods"] \
+            if path.exists() else []
+
+    nb_names = {str(f.get("foodId") or "").strip():
+                str(f.get("foodName") or "").strip() for f in foods(nb_path)}
+    idx = {}
+    for f in foods(en_path):
+        code = str(f.get("foodId") or "").strip()
+        raw = {c.get("nutrientId"): c for c in f.get("constituents", [])}
+        raw["calories"] = f.get("calories") or {}
+        raw["energy"] = f.get("energy") or {}
+        nutrients = {}
+        for nid, options in MVT_MAPPING:
+            for mvt_code, unit, factor in options:   # first present wins
+                c = raw.get(mvt_code) or {}
+                q = c.get("quantity")
+                if q is None or mvt_norm_unit(c.get("unit")) != mvt_norm_unit(unit):
+                    continue
+                nutrients[nid] = round(float(q) * factor, 6)
+                break
+        idx[code] = {
+            "name_en": str(f.get("foodName") or "").strip(),
+            "name_nb": nb_names.get(code, ""),
+            "nutrients": nutrients,
+        }
+    return idx
+
+
 # ----------------------------------------------------------------- actual rows
 def sample_from_db(db: str, n: int, sources: list[str]):
     import psycopg2
@@ -454,6 +503,11 @@ def preflight(rows, source_dir: Path) -> None:
             for p in (source_dir / "frida").rglob("*.xlsx")):
         sys.exit(f"error: no Frida *Dataset*.xlsx under {source_dir}/frida - "
                  f"wrong --source-dir? run download_frida.py first.")
+    if "mvt" in fams and not ((source_dir / "mvt" / "en-foods.json").exists()
+                              or (source_dir / "en-foods.json").exists()):
+        sys.exit(f"error: no Matvaretabellen en-foods.json under "
+                 f"{source_dir}/mvt - wrong --source-dir? run "
+                 f"download_mvt.py first.")
 
 
 def validate(rows, source_dir: Path, verbose: bool):
@@ -463,6 +517,7 @@ def validate(rows, source_dir: Path, verbose: bool):
     ciqual_idx = None
     fineli_idx = None
     frida_idx = None
+    mvt_idx = None
     checks = 0
     fails = 0
     per_source = {}          # source -> [checks, fails]
@@ -592,6 +647,23 @@ def validate(rows, source_dir: Path, verbose: bool):
             check_nutrients(r["source"], code, r["nutrients"], raw["nutrients"])
             check_native(r["source"], code, r["native"],
                          {"da": raw["name_da"]})
+        elif fam == "mvt":
+            if mvt_idx is None:
+                if verbose:
+                    print("  (loading Matvaretabellen raw JSON ...)")
+                mvt_idx = build_mvt_index(source_dir)
+            raw = mvt_idx.get(code)
+            if not raw:
+                check(False, r["source"], code, "in-source", "missing", "present")
+                continue
+            check(r["description"] == raw["name_en"], r["source"], code,
+                  "description", r["description"], raw["name_en"])
+            check(r["short_title"] == mvt_short(raw["name_en"]), r["source"],
+                  code, "short_title", r["short_title"],
+                  mvt_short(raw["name_en"]))
+            check_nutrients(r["source"], code, r["nutrients"], raw["nutrients"])
+            check_native(r["source"], code, r["native"],
+                         {"nb": raw["name_nb"]})
     return checks, fails, per_source, per_field
 
 
@@ -637,7 +709,7 @@ def main() -> None:
           + ", ".join(f"{s}={n}" for s, n in sorted(by_src.items())))
     print("  checks per food: description, short_title, all 24 nutrients"
           " (+ native names: de for BLS, fr for CIQUAL, fi/sv for Fineli,"
-          " da for Frida)")
+          " da for Frida, nb for MVT)")
 
     checks, fails, per_source, per_field = validate(
         rows, args.source_dir, args.verbose)
