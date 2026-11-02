@@ -1,9 +1,10 @@
 erDiagram
     %% ==================================================
     %% Multi-source food schema: FDC (Foundation, SR Legacy,
-    %% FNDDS Survey, Branded) + BLS 4.0 + Anuvaad INDB + TBCA + CIQUAL.
+    %% FNDDS Survey, Branded) + BLS 4.0 + Anuvaad INDB + TBCA + CIQUAL
+    %% + Fineli.
     %% food.id ranges: FDC = fdc_id (<10M), BLS 10M+, INDB 20M+, TBCA 30M+,
-    %% CIQUAL 40M + alim_code
+    %% CIQUAL 40M + alim_code, Fineli 50M+
     %% Nullability: NN = NOT NULL, NULL = nullable
     %% "FUTURE:" tag = worth importing for planned features
     %% ==================================================
@@ -11,18 +12,18 @@ erDiagram
     %% ---------- CANONICAL CORE (source-agnostic) ----------
 
     food_source {
-        text code PK "NN - fdc_foundation | fdc_sr_legacy | fdc_survey | fdc_branded | bls | indb | tbca | ciqual"
+        text code PK "NN - fdc_foundation | fdc_sr_legacy | fdc_survey | fdc_branded | bls | indb | tbca | ciqual | fineli"
         text name "NN - display name of the source database"
-        text license_note "NULL - CC0 (FDC), CC BY 4.0 (BLS, INDB), attribution (TBCA), Licence Ouverte 2.0 (CIQUAL)"
+        text license_note "NULL - CC0 (FDC), CC BY 4.0 (BLS, INDB, Fineli), attribution (TBCA), Licence Ouverte 2.0 (CIQUAL)"
     }
 
     food {
         bigint id PK "NN - surrogate key"
         text source FK "NN -> food_source"
-        text source_code "NN - fdc_id | BLS code (C131000) | INDB code (ASC001) | CIQUAL alim_code (19024); UNIQUE(source, source_code)"
+        text source_code "NN - fdc_id | BLS code (C131000) | INDB code (ASC001) | CIQUAL alim_code (19024) | Fineli FOODID (684); UNIQUE(source, source_code)"
         text description "NN - full English name (all current sources ship one)"
         text short_title "NULL - concise display name (derived; curatable)"
-        int food_category_id FK "NULL - set for FDC (1-28), FNDDS/WWEIA (1002-9999), TBCA (30001+), CIQUAL (40101-41104)"
+        int food_category_id FK "NULL - set for FDC (1-28), FNDDS/WWEIA (1002-9999), TBCA (30001+), CIQUAL (40101-41104), Fineli (50001+)"
         date publication_date "NULL - FUTURE: data freshness"
     }
 
@@ -34,8 +35,8 @@ erDiagram
     }
 
     nutrient_mapping {
-        text source PK "NN - import FAMILY: fdc | bls | indb | tbca | ciqual (NO FK: 'fdc' covers all fdc_* sources)"
-        text source_component_code PK "NN - FDC '1008', BLS 'ENERCC', INDB 'carb_g', CIQUAL const_code '328'"
+        text source PK "NN - import FAMILY: fdc | bls | indb | tbca | ciqual | fineli (NO FK: 'fdc' covers all fdc_* sources)"
+        text source_component_code PK "NN - FDC '1008', BLS 'ENERCC', INDB 'carb_g', CIQUAL const_code '328', Fineli 'ENERC'"
         int nutrient_id FK "NN -> canonical nutrient"
         numeric unit_factor "NN default 1 - converts source unit to canonical"
     }
@@ -53,8 +54,8 @@ erDiagram
     }
 
     food_category {
-        int id PK "NN - FDC ids 1-28, WWEIA ids 1002-9999 (no overlap)"
-        text source "NULL - null = FDC canonical; 'fdc_survey' = WWEIA; 'tbca', 'ciqual'"
+        int id PK "NN - FDC ids 1-28, WWEIA ids 1002-9999, TBCA 30001+, CIQUAL 40101-41104, Fineli 50001+ (no overlap)"
+        text source "NULL - null = FDC canonical; 'fdc_survey' = WWEIA; 'tbca'; 'ciqual'; 'fineli'"
         text description "NN - Dairy and Egg Products, Human milk..."
     }
 
@@ -64,7 +65,7 @@ erDiagram
     }
 
     food_portion {
-        bigint id PK "NN - FDC + INDB servings; BLS 4.0 ships none"
+        bigint id PK "NN - FDC + INDB + Fineli servings; BLS 4.0 ships none"
         bigint food_id FK "NN"
         numeric amount "NULL -> servingQuantity"
         int measure_unit_id FK "NN"
@@ -116,7 +117,7 @@ erDiagram
 
     food_summary {
         bigint food_id PK "NN - MATERIALIZED VIEW, app queries only this"
-        text source "NN - fdc_foundation | ... | fdc_branded | bls | indb | tbca | ciqual"
+        text source "NN - fdc_foundation | ... | fdc_branded | bls | indb | tbca | ciqual | fineli"
         text source_code "NN - fdc_id / source code"
         text name "NN - EN; app joins food_translation for locale"
         text short_title "NN - concise label (coalesce short_title, description)"
@@ -137,14 +138,15 @@ erDiagram
 
     %% ---------- LOCALIZATION (i18n) ----------
     %% BLS German names imported directly as locale 'de',
-    %% CIQUAL French names as locale 'fr'
+    %% CIQUAL French names as locale 'fr',
+    %% Fineli Finnish/Swedish names as 'fi' / 'sv' (source native)
     %% (native quality, no machine translation needed).
     %% FDC foods need translation; COALESCE fallback to EN.
 
     food_translation {
         bigint food_id PK, FK "NN"
         text locale PK "NN - de, fr, es... (BCP 47)"
-        text description "NN - BLS: Lebensmittelbezeichnung; CIQUAL: alim_nom_fr"
+        text description "NN - BLS: Lebensmittelbezeichnung; CIQUAL: alim_nom_fr; Fineli: foodname_FI/SV"
         text source "NN default 'machine' - native | machine | community | verified"
         bool ai_generated "NN default false - true for MT/LLM output (DeepL...)"
         timestamptz updated_at "NN default now()"

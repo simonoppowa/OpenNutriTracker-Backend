@@ -2,12 +2,12 @@
 -- Multi-source food schema for Supabase
 -- Matches multisource_food_schema.mermaid:
 --   FDC (Foundation, SR Legacy, FNDDS Survey) + BLS 4.0 + INDB + TBCA
---   + CIQUAL,
---   images, aliases, tags, i18n.
+--   + CIQUAL + Fineli, images, aliases, tags, i18n.
 -- Run with: supabase db push / psql "$SUPABASE_DB_URL" -f schema.sql
 --
 -- Load order for the generated CSVs (fdc_to_ont_csv.py,
--- bls_to_ont_csv.py, indb_to_ont_csv.py, ciqual_to_ont_csv.py):
+-- bls_to_ont_csv.py, indb_to_ont_csv.py, ciqual_to_ont_csv.py,
+-- fineli_to_ont_csv.py):
 --   food_source, nutrient, nutrient_mapping, food_category, food,
 --   food_nutrient, measure_unit, food_portion, market_acquisition,
 --   input_food, food_component, retention_factor, food_image,
@@ -18,7 +18,7 @@
 -- ---------- 1. Source registry ------------------------------
 
 create table if not exists food_source (
-    code          text primary key,          -- fdc_foundation | fdc_sr_legacy | bls | ciqual
+    code          text primary key,          -- fdc_foundation | fdc_sr_legacy | bls | ciqual | fineli
     name          text not null,
     license_note  text
 );
@@ -34,7 +34,7 @@ create table if not exists food_category (
 create table if not exists food (
     id                bigint primary key,
     source            text   not null references food_source (code),
-    source_code       text   not null,               -- fdc_id | BLS code | CIQUAL alim_code
+    source_code       text   not null,               -- fdc_id | BLS code | CIQUAL alim_code | Fineli FOODID
     description       text   not null,               -- full English name
     short_title       text,                          -- concise display name
     food_category_id  int    references food_category (id),
@@ -50,12 +50,12 @@ create table if not exists nutrient (
 );
 
 -- Import-time mapping: source component code -> canonical nutrient.
--- `source` is the import FAMILY (fdc | bls | indb | tbca | ciqual), NOT a
--- food_source.code: 'fdc' covers fdc_foundation / fdc_sr_legacy /
--- fdc_survey, so there is deliberately no FK here.
+-- `source` is the import FAMILY (fdc | bls | indb | tbca | ciqual |
+-- fineli), NOT a food_source.code: 'fdc' covers fdc_foundation /
+-- fdc_sr_legacy / fdc_survey, so there is deliberately no FK here.
 -- No FK on source_component_code either: it references FDC nutrient
--- ids, BLS component codes, INDB column names, CIQUAL const_codes
--- depending on source.
+-- ids, BLS component codes, INDB column names, CIQUAL const_codes,
+-- Fineli EUFDNAME codes depending on source.
 create table if not exists nutrient_mapping (
     source                 text    not null,
     source_component_code  text    not null,

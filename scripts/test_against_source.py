@@ -2,10 +2,10 @@
 """Validate imported food data against the ORIGINAL source files.
 
 Samples random foods from the database (or from converted CSVs) and, for
-each, re-derives the expected values straight from the raw FDC / BLS
-downloads - independently of the converters - then compares. Catches
-import bugs, unit-conversion drift, and truncation that a converter
-self-test would miss.
+each, re-derives the expected values straight from the raw source
+downloads (FDC, BLS, CIQUAL, Fineli) - independently of the converters -
+then compares. Catches import bugs, unit-conversion drift, and truncation
+that a converter self-test would miss.
 
 Per sampled food it checks:
     * description        == raw source name
@@ -14,8 +14,12 @@ Per sampled food it checks:
       in food_summary == the raw values, resolved with the same
       per-nutrient priority + unit factors the converter uses (NULL-aware,
       within a 2% tolerance for import rounding)
-    * BLS only: German food_translation == raw 'Lebensmittelbezeichnung'
-    * CIQUAL only: French food_translation == raw 'alim_nom_fr'
+    * native-name food_translation rows (source 'native') == the raw
+      names:
+        - BLS: German 'de' == raw 'Lebensmittelbezeichnung'
+        - CIQUAL: French 'fr' == raw 'alim_nom_fr'
+        - Fineli: Finnish 'fi' / Swedish 'sv' == raw foodname_FI /
+          foodname_SV (sentence-cased like the converter)
 
 By default it checks the Supabase tables (food + food_summary +
 food_translation) against the raw source data. Pass --csv-dir to instead
@@ -35,6 +39,10 @@ Usage:
     # offline: CIQUAL CSVs vs the raw XML in ./source/ciqual:
     python test_against_source.py --csv-dir out/ciqual --source ciqual
 
+    # offline: validate the Fineli CSVs against ./source/fineli:
+    python test_against_source.py --csv-dir out/fineli --source-dir source \
+        --source fineli --samples 100
+
 Requires: psycopg2-binary (for --db), openpyxl (for BLS).
 Exit code 0 = all checks passed, 1 = at least one mismatch.
 """
@@ -52,6 +60,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "fdc"))
 sys.path.insert(0, str(HERE / "bls"))
 sys.path.insert(0, str(HERE / "ciqual"))
+sys.path.insert(0, str(HERE / "fineli"))
 sys.path.insert(0, str(HERE / "shared"))
 
 from fdc_to_ont_csv import (CANONICAL_NUTRIENTS, SOURCE_BY_DATA_TYPE,  # noqa: E402
@@ -60,8 +69,13 @@ from bls_to_ont_csv import (BLS_MAPPING, parse_amount,                 # noqa: E
                             short_title as bls_short)
 from ciqual_to_ont_csv import (CIQUAL_MAPPING,                         # noqa: E402
                                short_title as ciqual_short)
+from fineli_to_ont_csv import (FINELI_MAPPING,                         # noqa: E402
+                               parse_amount as fineli_amount,
+                               sentence_case as fineli_case,
+                               short_title as fineli_short)
 
 TOL = 0.02          # 2% relative tolerance for floats (rounding at import)
+SOURCES = ["fdc", "bls", "ciqual", "fineli"]     # --source choices
 
 # canonical nutrient id -> food_summary column name (fixed by schema.sql)
 NUTRIENT_COLUMN = {
@@ -93,6 +107,14 @@ def approx(a, b) -> bool:
 def read_csv(path: Path) -> list[dict]:
     with open(path, newline="", encoding="utf-8-sig") as fh:
         return list(csv.DictReader(fh))
+
+
+def source_subdir(source_dir: Path, name: str) -> Path:
+    """<source_dir>/<name> when it exists, else source_dir itself (so
+    --source-dir may point at either the shared root or the source's own
+    folder)."""
+    sub = source_dir / name
+    return sub if sub.is_dir() else source_dir
 
 
 # ----------------------------------------------------------------- FDC origin
@@ -205,7 +227,7 @@ def build_ciqual_index(source_dir: Path):
     from the raw CIQUAL XML (alim_*.xml + compo_*.xml), applying
     CIQUAL_MAPPING's priority and unit factors."""
     import xml.etree.ElementTree as ET
-    base = source_dir / "ciqual" if (source_dir / "ciqual").is_dir() else source_dir
+    base = source_subdir(source_dir, "ciqual")
     alims = sorted(p for p in base.rglob("alim_*.xml")
                    if not p.name.startswith("alim_grp_"))
     compos = sorted(base.rglob("compo_*.xml"))
@@ -237,6 +259,53 @@ def build_ciqual_index(source_dir: Path):
     return idx
 
 
+# ----------------------------------------------------------------- Fineli origin
+def _fineli_rows(fineli_dir: Path, name: str) -> list[dict]:
+    """One semicolon-separated Fineli file (UTF-8, else Latin-1/cp1252)."""
+    hits = [p for p in fineli_dir.iterdir() if p.name.lower() == name.lower()]
+    if not hits:
+        return []
+    raw = hits[0].read_bytes()
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = raw.decode("cp1252", "replace")
+    return list(csv.DictReader(text.splitlines(), delimiter=";"))
+
+
+def build_fineli_index(source_dir: Path):
+    """FOODID -> {name_en, name_fi, name_sv, nutrients:{canonical_id:
+    amount}}. Applies FINELI_MAPPING (EUFDNAME + unit_factor, per-nutrient
+    priority) to the raw component_value.csv - the converter's mapping,
+    re-read from the raw files."""
+    d = source_subdir(source_dir, "fineli")
+    names = {lang: {r["FOODID"]: r["FOODNAME"].strip()
+                    for r in _fineli_rows(d, f"foodname_{lang}.csv")}
+             for lang in ("EN", "FI", "SV")}
+    raw: dict[str, dict[str, float]] = {}
+    for r in _fineli_rows(d, "component_value.csv"):
+        amount = fineli_amount(r["BESTLOC"])
+        if amount is not None:
+            raw.setdefault(r["FOODID"], {})[r["EUFDNAME"]] = amount
+    idx = {}
+    for r in _fineli_rows(d, "food.csv"):
+        fid = r["FOODID"]
+        vals = raw.get(fid, {})
+        nutrients = {}
+        for nid, options in FINELI_MAPPING:
+            for code, factor in options:          # first present wins
+                if code in vals:
+                    nutrients[nid] = round(vals[code] * factor, 6)
+                    break
+        idx[fid] = {
+            "name_en": names["EN"].get(fid) or r["FOODNAME"].strip(),
+            "name_fi": names["FI"].get(fid, ""),
+            "name_sv": names["SV"].get(fid, ""),
+            "nutrients": nutrients,
+        }
+    return idx
+
+
 # ----------------------------------------------------------------- actual rows
 def sample_from_db(db: str, n: int, sources: list[str]):
     import psycopg2
@@ -246,11 +315,9 @@ def sample_from_db(db: str, n: int, sources: list[str]):
     with conn.cursor() as cur:
         cur.execute(f"""
             select f.source, f.source_code, f.description, f.short_title,
-                   (select t.description from food_translation t
-                    where t.food_id = f.id and t.locale = 'de') as de,
-                   (select t.description from food_translation t
-                    where t.food_id = f.id and t.locale = 'fr'
-                      and t.source = 'native') as fr,
+                   (select json_object_agg(t.locale, t.description)
+                    from food_translation t where t.food_id = f.id
+                      and t.source = 'native') as native,
                    {ncols}
             from food f join food_summary s on s.food_id = f.id
             where split_part(f.source,'_',1) = any(%s)
@@ -259,6 +326,7 @@ def sample_from_db(db: str, n: int, sources: list[str]):
         rows = []
         for raw in cur.fetchall():
             d = dict(zip(cols, raw))
+            d["native"] = d["native"] or {}       # {locale: native name}
             nutrients = {i: d.pop(NUTRIENT_COLUMN[i]) for i in range(1, 25)}
             d["nutrients"] = {k: (float(v) if v is not None else None)
                               for k, v in nutrients.items()}
@@ -276,14 +344,13 @@ def sample_from_csv(csv_dir: Path, n: int):
             if (r.get("amount") or "").strip():
                 nut.setdefault(r["food_id"], {})[int(r["nutrient_id"])] = \
                     float(r["amount"])
-    de, fr = {}, {}
+    native = {}                                # food_id -> {locale: name}
     ft = csv_dir / "food_translation.csv"
     if ft.exists():
         for r in read_csv(ft):
-            if r.get("locale") == "de":
-                de[r["food_id"]] = r["description"]
-            elif r.get("locale") == "fr":
-                fr[r["food_id"]] = r["description"]
+            if r.get("source") == "native":
+                native.setdefault(r["food_id"], {})[r["locale"]] = \
+                    r["description"]
     picks = random.sample(foods, min(n, len(foods)))
     out = []
     for r in picks:
@@ -291,8 +358,7 @@ def sample_from_csv(csv_dir: Path, n: int):
         out.append({
             "source": r["source"], "source_code": r["source_code"],
             "description": r["description"], "short_title": r["short_title"],
-            "de": de.get(r["id"]),
-            "fr": fr.get(r["id"]),
+            "native": native.get(r["id"], {}),
             "nutrients": {i: vals.get(i) for i in range(1, 25)},
         })
     return out
@@ -314,6 +380,12 @@ def preflight(rows, source_dir: Path) -> None:
     if "ciqual" in fams and not list(source_dir.rglob("compo_*.xml")):
         sys.exit(f"error: no CIQUAL compo_*.xml under {source_dir}/ciqual - "
                  f"wrong --source-dir? run download_ciqual.py first.")
+    if "fineli" in fams and not (
+            list(source_dir.glob("fineli/component_value.csv"))
+            or list(source_dir.glob("component_value.csv"))):
+        sys.exit(f"error: no Fineli component_value.csv under "
+                 f"{source_dir}/fineli - wrong --source-dir? run "
+                 f"download_fineli.py first.")
 
 
 def validate(rows, source_dir: Path, verbose: bool):
@@ -321,6 +393,7 @@ def validate(rows, source_dir: Path, verbose: bool):
     fdc_idx = None
     bls_idx = None
     ciqual_idx = None
+    fineli_idx = None
     checks = 0
     fails = 0
     per_source = {}          # source -> [checks, fails]
@@ -349,6 +422,14 @@ def validate(rows, source_dir: Path, verbose: bool):
             check(approx(db_nut.get(nid), exp_nut.get(nid)),
                   source, code, NUTRIENT_COLUMN[nid],
                   db_nut.get(nid), exp_nut.get(nid))
+
+    def check_native(source, code, native, expected):
+        """Compare native-name translations, {locale: raw name}; a locale
+        the raw source leaves blank is not checked."""
+        for loc, exp in expected.items():
+            if exp:
+                check(native.get(loc) == exp, source, code, f"{loc}_name",
+                      native.get(loc), exp)
 
     for i, r in enumerate(rows, 1):
         fam = r["source"].split("_")[0]
@@ -388,9 +469,8 @@ def validate(rows, source_dir: Path, verbose: bool):
             check(r["short_title"] == bls_short(exp_desc), r["source"], code,
                   "short_title", r["short_title"], bls_short(exp_desc))
             check_nutrients(r["source"], code, r["nutrients"], raw["nutrients"])
-            if raw["name_de"]:
-                check(r["de"] == raw["name_de"], r["source"], code,
-                      "de_name", r["de"], raw["name_de"])
+            check_native(r["source"], code, r["native"],
+                         {"de": raw["name_de"]})
         elif fam == "ciqual":
             if ciqual_idx is None:
                 if verbose:
@@ -406,9 +486,26 @@ def validate(rows, source_dir: Path, verbose: bool):
             check(r["short_title"] == ciqual_short(exp_desc), r["source"], code,
                   "short_title", r["short_title"], ciqual_short(exp_desc))
             check_nutrients(r["source"], code, r["nutrients"], raw["nutrients"])
-            if raw["name_fr"]:
-                check(r.get("fr") == raw["name_fr"], r["source"], code,
-                      "fr_name", r.get("fr"), raw["name_fr"])
+            check_native(r["source"], code, r["native"],
+                         {"fr": raw["name_fr"]})
+        elif fam == "fineli":
+            if fineli_idx is None:
+                if verbose:
+                    print("  (loading Fineli raw CSVs ...)")
+                fineli_idx = build_fineli_index(source_dir)
+            raw = fineli_idx.get(code)
+            if not raw:
+                check(False, r["source"], code, "in-source", "missing", "present")
+                continue
+            exp_desc = fineli_case(raw["name_en"])
+            check(r["description"] == exp_desc, r["source"], code,
+                  "description", r["description"], exp_desc)
+            check(r["short_title"] == fineli_short(exp_desc), r["source"], code,
+                  "short_title", r["short_title"], fineli_short(exp_desc))
+            check_nutrients(r["source"], code, r["nutrients"], raw["nutrients"])
+            check_native(r["source"], code, r["native"],
+                         {loc: fineli_case(raw[f"name_{loc}"])
+                          for loc in ("fi", "sv") if raw[f"name_{loc}"]})
     return checks, fails, per_source, per_field
 
 
@@ -420,7 +517,7 @@ def main() -> None:
                     help="validate converted CSVs offline instead of the DB")
     ap.add_argument("--source-dir", type=Path, default=Path("source"),
                     help="raw origin data folder (default: ./source)")
-    ap.add_argument("--source", nargs="+", choices=["fdc", "bls", "ciqual"],
+    ap.add_argument("--source", nargs="+", choices=SOURCES,
                     default=["fdc", "bls"], help="sources to sample (DB mode)")
     ap.add_argument("--samples", type=int, default=50)
     ap.add_argument("--seed", type=int, default=None)
@@ -453,7 +550,7 @@ def main() -> None:
     print("  sampled per source: "
           + ", ".join(f"{s}={n}" for s, n in sorted(by_src.items())))
     print("  checks per food: description, short_title, all 24 nutrients"
-          " (+ de_name for BLS, fr_name for CIQUAL)")
+          " (+ native names: de for BLS, fr for CIQUAL, fi/sv for Fineli)")
 
     checks, fails, per_source, per_field = validate(
         rows, args.source_dir, args.verbose)
