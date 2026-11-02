@@ -16,6 +16,7 @@ Sources (--source, repeatable; default: fdc bls):
     frida   Danish Food Composition Database / Frida, DTU (CC BY 4.0)
     mvt     Matvaretabellen, Norwegian Food Composition Table (CC BY 4.0,
           Mattilsynet) - JSON API, auto-downloaded
+    slv     Swedish Food Agency (Livsmedelsverket) food database (CC BY 4.0)
     Only fdc and bls run by default; the others are opt-in (name them).
 
 Actions (--action, repeatable; default: all):
@@ -64,7 +65,7 @@ REPO = ROOT.parent
 SCHEMA_SQL = REPO / "sql" / "schema.sql"
 
 # canonical source order (FDC first: the others need FDC's nutrient table)
-SOURCE_ORDER = ["fdc", "bls", "ciqual", "fineli", "frida", "mvt"]
+SOURCE_ORDER = ["fdc", "bls", "ciqual", "fineli", "frida", "mvt", "slv"]
 # the default run; every other source is opt-in via --source
 DEFAULT_SOURCES = ["fdc", "bls"]
 ALL_ACTIONS = ["download", "convert", "schema", "import"]
@@ -103,6 +104,8 @@ def do_download(src: str, source_dir: Path, datasets: list[str] | None,
         run(py(ROOT / "frida" / "download_frida.py", "--output", source_dir), dry)
     elif src == "mvt":
         run(py(ROOT / "mvt" / "download_mvt.py", "--output", source_dir), dry)
+    elif src == "slv":
+        run(py(ROOT / "slv" / "download_slv.py", "--output", source_dir), dry)
 
 
 def do_convert(src: str, source_dir: Path, out_dir: Path, dry: bool) -> None:
@@ -124,6 +127,9 @@ def do_convert(src: str, source_dir: Path, out_dir: Path, dry: bool) -> None:
     elif src == "mvt":
         run(py(ROOT / "mvt" / "mvt_to_ont_csv.py",
                "--source-dir", source_dir / "mvt", "--output", out_dir), dry)
+    elif src == "slv":
+        run(py(ROOT / "slv" / "slv_to_ont_csv.py",
+               "--source-dir", source_dir / "slv", "--output", out_dir), dry)
 
 
 def do_schema(db: str, dry: bool) -> None:
