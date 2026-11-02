@@ -121,6 +121,17 @@ python3 shared/translate_all.py --target de
 
 `import_fdc.py` refreshes `food_summary` at the end of every run.
 
+To ship the same data without Supabase, build the offline SQLite file
+straight from the converted CSVs (no Postgres involved) — see
+[Offline SQLite database](#offline-sqlite-database):
+
+```bash
+python3 shared/build_sqlite.py \
+    --csv-dir out/fdc out/bls out/ciqual out/fineli out/frida out/mvt out/slv \
+    --output out/sqlite/foods.sqlite
+python3 shared/build_sqlite.py --check out/sqlite/foods.sqlite
+```
+
 ## Scripts
 
 ### Orchestration
@@ -231,7 +242,17 @@ All map to the 24 canonical nutrients and normalize units at import.
   indistinguishable afterwards. `ai_generated` stays `true` after promotion:
   it records where the text came from, not whether it is trusted.
 
+### Offline database (`shared/build_sqlite.py`)
+- **`shared/build_sqlite.py`** — builds `foods.sqlite` (+ `foods.sqlite.gz`
+  and `ATTRIBUTION.md`) from converted CSV folders, for the app to query on
+  the phone. Standard library only; Python 3.12+. See
+  [Offline SQLite database](#offline-sqlite-database).
+
 ### Testing
+- **`shared/test_build_sqlite.py`** — builds a database from the fixture
+  CSVs in `shared/testdata/sqlite` and checks all five RPCs, the
+  `food_summary` derivations and the review guard. No database needed:
+  `python3 scripts/shared/test_build_sqlite.py`.
 - **`shared/test_review_translations.py`** — exercises that completeness
   guard on its own, without a database. Run it directly:
   `python3 scripts/shared/test_review_translations.py`.
@@ -251,6 +272,96 @@ python3 test_against_source.py --csv-dir out/frida --source frida    # offline
 python3 test_against_source.py --csv-dir out/mvt --source-dir source --source mvt  # offline
 python3 test_against_source.py --csv-dir out/slv --source-dir source --source slv  # offline
 ```
+
+## Offline SQLite database
+
+`scripts/shared/build_sqlite.py` turns the converted CSV folders into one
+SQLite file that answers the app's five RPCs — `search_food_summary`,
+`search_food_translation`, `food_summary_by_ids`,
+`portion_labels_by_food_ids`, `portions_by_food_ids` — with the same rows
+and row shapes the Supabase functions return (their final definitions in
+`schema.sql`, `label_en` and the title-first order included). The app
+downloads `foods.sqlite.gz` from this repo's releases and queries it
+locally.
+
+```bash
+cd scripts
+python3 shared/build_sqlite.py --csv-dir out/fdc out/bls out/ciqual \
+    out/fineli out/frida out/mvt out/slv --output out/sqlite/foods.sqlite
+python3 shared/build_sqlite.py --check out/sqlite/foods.sqlite
+python3 shared/test_build_sqlite.py
+```
+
+- **What it holds.** `food_summary` (the materialized view, every column and
+  derivation: the 24 pivoted nutrients, the default serving from the first
+  portion, `serving_unit` 'undetermined' → 'portion', the "<amount>
+  <modifier>" fallback, `has_portion`), `food_translation`, the deliverable
+  portions numbered as `portions_by_food_ids` numbers them, the two
+  `*_translation_seed.sql` migrations (keyed by the English text they join
+  on), `food_source` with `license_note`, and `meta` (`schema_version`,
+  `build_date`, `food_count`, per-source and per-locale counts). FTS5
+  indexes: `porter unicode61` on `food_summary.name`, `unicode61
+  remove_diacritics 2` on translations, both with `tokenchars '/'`.
+- **Numbers** keep the JSON type PostgREST gives them: a value whose CSV
+  text has no decimal point is an integer, anything else a real.
+- **Size.** `VACUUM` at the page size that gives the smallest file
+  (`--page-size auto`; 8192 for the full build), no free pages, FTS
+  segments merged. Full build (FDC Foundation/SR Legacy/Survey, BLS and the
+  five European sources, 34,673 foods): ~16 MB, ~4.6 MB gzipped.
+- **Reviewed translations.** The seeds are machine output, which the RPCs
+  never show. `--review review/portions_de.csv` takes a CSV from
+  `review_translations.py --export` after review and promotes that locale
+  to 'verified' exactly as `--apply` does, completeness guard included.
+- **Machine food names** from `translate_all.py`
+  (`out/<source>/food_translation_<locale>.csv`) are loaded when present,
+  after the native ones, "on conflict do nothing".
+- **Checked against Postgres.** The full build was loaded into Postgres 17
+  with `schema.sql`, the seeds and CSV `COPY`: all 34,673 `food_summary`
+  rows and all 25,217 translations are identical (values and JSON types),
+  and 391 of 409 sample RPC calls returned identical rows in identical
+  order. The other 18 are the differences below.
+- **Bump `SCHEMA_VERSION`** whenever the file's tables or columns change:
+  the app refuses a file whose `meta.schema_version` it does not know.
+
+### Where the offline search differs from Postgres
+
+Match sets can differ; the order of whatever matches does not (`has_portion
+desc`, title = term, `length(name)`, `food_id`, computed from the same
+values). Postgres's text search cannot be loaded into SQLite, so:
+
+1. **Stemmer.** FTS5's `porter` is the original Porter algorithm; Postgres's
+   `english` uses Snowball English (Porter2). They mostly agree, but not
+   always: `pies` stems to `pi` in Porter and `pie` in Snowball, so `pie`
+   misses "pies"; `fried` → `fri` matches neither "fry" nor "frying" in
+   Porter.
+2. **Stopwords.** FTS5 has none; the query drops Postgres's `english.stop`
+   words instead. Inside a quoted phrase only leading and trailing
+   stopwords are dropped, and inner ones must be present and adjacent,
+   where Postgres only keeps their position gap.
+3. **Diacritics.** FTS5 folds them (`remove_diacritics 1` for English,
+   `2` for translations); Postgres's `english` and `simple` do not. Offline,
+   `cafe` finds "café", `apple` finds Swedish "äpple" and `Äpfel` finds
+   "Apfel" — Postgres finds none of those.
+4. **Hyphens.** Postgres indexes "low-fat" as `low-fat`, `low` and `fat`,
+   and a hyphenated query word must match the compound; FTS5 splits at the
+   hyphen and matches the parts as a phrase, so `low-fat` also finds
+   "low fat".
+5. **Numbers and dots.** Postgres keeps `2.5` and `foo.bar` as one token;
+   FTS5 splits at the dot, so `2` matches "2.5 % fat".
+6. **Slashes.** Postgres reads `mango/papaya` as one file-path token; the
+   `tokenchars '/'` option does the same. Postgres's file-path rule is
+   ASCII-only, though, so it splits "mælk/fløde" before the `æ` and finds
+   it for `mælk`; FTS5 keeps it whole and does not.
+7. **Negation only.** `-cheese` alone matches every food without cheese in
+   Postgres; FTS5 has no unary NOT, so such a term (or `or` branch) matches
+   nothing.
+8. **Case and trim.** `lower()`/`btrim()` for the title comparison are
+   applied by Python at build time and by Dart at query time instead of by
+   Postgres; they agree except for locale-specific case rules (e.g. Turkish
+   dotted I).
+9. **Duplicate ids.** Postgres's `unnest` returns a row per repeated id in
+   `portions_by_food_ids`/`portion_labels_by_food_ids`; the offline version
+   returns each food once (`portion_labels` keeps repeats and the id order).
 
 ## SQL (`sql/`)
 - **`schema.sql`** — full DDL: tables, indexes (pg_trgm + FTS + tag/

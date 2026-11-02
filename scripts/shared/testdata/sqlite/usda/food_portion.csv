@@ -1,0 +1,13 @@
+id,food_id,amount,measure_unit_id,portion_description,modifier,seq_num,gram_weight
+11,1001,,9999,1 cup,10205,1,150.0
+12,1001,,9999,Quantity not specified,90000,2,0.0
+13,1002,,9999,1 medium,,1,173
+14,1003,,9999,"1 cup, NFS",,1,210.0
+15,1003,,9999,Quantity not specified,,2,0
+16,1004,,9999,1 cup,,1,240
+17,1005,1.0,9999,,medium,1,213
+18,1007,,9999,1 large,,,180
+19,1007,,9999,1 cup,,2,200
+20,1008,2.0,1001,,,1,33.9
+21,1009,,9999,1 medium,,1,182
+22,1009,,9999,1 cup yields,,2,100

@@ -99,6 +99,7 @@ scripts/
   slv/  download_slv.py, slv_to_ont_csv.py   (Livsmedelsverket API JSON)
   shared/ import_fdc.py         psycopg2 COPY loader (all sources)
           translate_all.py      DeepL, DB-driven, all sources, per-source CSVs
+          build_sqlite.py       offline foods.sqlite for the app (no Postgres)
   run_pipeline.py               orchestrates download/convert/schema/import
   test_against_source.py        validates DB/CSVs vs raw source data
 diagrams/multisource_food_schema.mermaid   schema ground truth
@@ -129,6 +130,16 @@ rest use `--append`.
   values (Oat flakes BLS C133000 = 348 kcal; hummus FDC 321358 magnesium
   71.1; SLV 588 apple w/ skin = 48 kcal) rather than trusting the code
   path.
+
+## Offline SQLite export
+
+`scripts/shared/build_sqlite.py` rebuilds `food_summary` and the five app
+RPCs in SQLite (`OfflineRpc`); the app's `SqliteFoodRpcClient` runs the
+same SQL. Changing the view or an RPC means changing both, and bumping
+`SCHEMA_VERSION` when the file's tables or columns change. Run
+`python3 scripts/shared/test_build_sqlite.py`; its fixture expectations
+were checked against Postgres. README lists where FTS5 matching differs
+from Postgres text search — keep that list true.
 
 ## When you change the schema
 

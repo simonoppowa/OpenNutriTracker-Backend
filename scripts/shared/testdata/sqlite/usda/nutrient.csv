@@ -1,0 +1,25 @@
+id,name,unit_name,rank
+1,Energy,KCAL,10
+2,Carbohydrates,G,20
+3,Fat,G,30
+4,Protein,G,40
+5,Sugars,G,50
+6,Saturated fat,G,60
+7,Fiber,G,70
+8,Monounsaturated fat,G,80
+9,Polyunsaturated fat,G,90
+10,Trans fat,G,100
+11,Cholesterol,MG,110
+12,Sodium,MG,120
+13,Potassium,MG,130
+14,Magnesium,MG,140
+15,Calcium,MG,150
+16,Iron,MG,160
+17,Zinc,MG,170
+18,Phosphorus,MG,180
+19,Vitamin A (RAE),UG,190
+20,Vitamin C,MG,200
+21,Vitamin D,UG,210
+22,Vitamin B6,MG,220
+23,Vitamin B12,UG,230
+24,Niacin (B3),MG,240

@@ -1,0 +1,5 @@
+id,food_id,nutrient_id,amount,origin,reference,data_points,min,max
+60000001,50000001,1,220.5,calculated,,,,
+60000002,50000001,7,11.2,analysis,,,,
+60000003,50000002,1,52.1,calculated,,,,
+60000004,50000003,1,44.9,calculated,,,,

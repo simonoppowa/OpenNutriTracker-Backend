@@ -1,0 +1,10 @@
+id,source,source_code,description,short_title,food_category_id,publication_date
+1001,fdc_survey,1001,"Potato, NFS",Potato,2006,2024-10-31
+1002,fdc_survey,1002,"Potato, baked, peel eaten",Potato,2006,2024-10-31
+1003,fdc_survey,1003,"Potatoes, mashed, NS as to form",,2006,2024-10-31
+1004,fdc_survey,1004,Beef stew with potatoes,"",3004,2024-10-31
+1005,fdc_sr_legacy,1005,"Potatoes, raw",Potatoes,11,2019-04-01
+1006,fdc_sr_legacy,1006,Potato,Potato,11,2019-04-01
+1007,fdc_survey,1007,"Sweet potato, NFS",Sweet potato,2006,2024-10-31
+1008,fdc_sr_legacy,1008,"Hummus, commercial",Hummus,,2019-04-01
+1009,fdc_survey,1009,"Apple, raw",Apple,6002,2024-10-31

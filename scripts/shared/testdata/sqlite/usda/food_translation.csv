@@ -1,0 +1,4 @@
+food_id,locale,description,source
+1001,de,"Kartoffel, NFS",machine
+1004,de,Rindfleischeintopf mit Kartoffeln,machine
+1006,de,Kartoffel,machine
