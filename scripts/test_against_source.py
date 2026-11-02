@@ -15,6 +15,7 @@ Per sampled food it checks:
       per-nutrient priority + unit factors the converter uses (NULL-aware,
       within a 2% tolerance for import rounding)
     * BLS only: German food_translation == raw 'Lebensmittelbezeichnung'
+    * CIQUAL only: French food_translation == raw 'alim_nom_fr'
 
 By default it checks the Supabase tables (food + food_summary +
 food_translation) against the raw source data. Pass --csv-dir to instead
@@ -30,6 +31,9 @@ Usage:
     # offline: validate converted CSVs (no DB):
     python test_against_source.py --csv-dir out/fdc --source-dir source \
         --source fdc --samples 100
+
+    # offline: CIQUAL CSVs vs the raw XML in ./source/ciqual:
+    python test_against_source.py --csv-dir out/ciqual --source ciqual
 
 Requires: psycopg2-binary (for --db), openpyxl (for BLS).
 Exit code 0 = all checks passed, 1 = at least one mismatch.
@@ -47,12 +51,15 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "fdc"))
 sys.path.insert(0, str(HERE / "bls"))
+sys.path.insert(0, str(HERE / "ciqual"))
 sys.path.insert(0, str(HERE / "shared"))
 
 from fdc_to_ont_csv import (CANONICAL_NUTRIENTS, SOURCE_BY_DATA_TYPE,  # noqa: E402
                             short_title as fdc_short)
 from bls_to_ont_csv import (BLS_MAPPING, parse_amount,                 # noqa: E402
                             short_title as bls_short)
+from ciqual_to_ont_csv import (CIQUAL_MAPPING,                         # noqa: E402
+                               short_title as ciqual_short)
 
 TOL = 0.02          # 2% relative tolerance for floats (rounding at import)
 
@@ -177,6 +184,59 @@ def build_bls_index(source_dir: Path):
     return idx
 
 
+# ----------------------------------------------------------------- CIQUAL origin
+def ciqual_raw_amount(teneur: str):
+    """Independent re-read of a CIQUAL 'teneur': '-' -> None,
+    'traces' / '< x' -> 0.0 (the converter's documented policy),
+    '12,5' -> 12.5."""
+    s = (teneur or "").strip()
+    if not s or s == "-":
+        return None
+    if s == "traces" or s.startswith("<"):
+        return 0.0
+    try:
+        return float(s.replace(",", "."))
+    except ValueError:
+        return None
+
+
+def build_ciqual_index(source_dir: Path):
+    """alim_code -> {name_fr, name_en, nutrients:{canonical_id: amount}}
+    from the raw CIQUAL XML (alim_*.xml + compo_*.xml), applying
+    CIQUAL_MAPPING's priority and unit factors."""
+    import xml.etree.ElementTree as ET
+    base = source_dir / "ciqual" if (source_dir / "ciqual").is_dir() else source_dir
+    alims = sorted(p for p in base.rglob("alim_*.xml")
+                   if not p.name.startswith("alim_grp_"))
+    compos = sorted(base.rglob("compo_*.xml"))
+    if not alims or not compos:
+        return {}
+    idx = {}
+    for _ev, el in ET.iterparse(alims[-1]):
+        if el.tag == "ALIM":
+            code = (el.findtext("alim_code") or "").strip()
+            idx[code] = {"name_fr": (el.findtext("alim_nom_fr") or "").strip(),
+                         "name_en": (el.findtext("alim_nom_eng") or "").strip(),
+                         "nutrients": {}, "_prio": {}}
+            el.clear()
+    wanted = {c: (nid, p, f) for nid, opts in CIQUAL_MAPPING
+              for p, (c, f) in enumerate(opts)}
+    for _ev, el in ET.iterparse(compos[-1]):
+        if el.tag != "COMPO":
+            continue
+        hit = wanted.get((el.findtext("const_code") or "").strip())
+        food = idx.get((el.findtext("alim_code") or "").strip())
+        amount = ciqual_raw_amount(el.findtext("teneur")) if hit and food \
+            else None
+        if amount is not None:
+            nid, prio, factor = hit
+            if prio < food["_prio"].get(nid, 99):
+                food["_prio"][nid] = prio
+                food["nutrients"][nid] = round(amount * factor, 6)
+        el.clear()
+    return idx
+
+
 # ----------------------------------------------------------------- actual rows
 def sample_from_db(db: str, n: int, sources: list[str]):
     import psycopg2
@@ -188,6 +248,9 @@ def sample_from_db(db: str, n: int, sources: list[str]):
             select f.source, f.source_code, f.description, f.short_title,
                    (select t.description from food_translation t
                     where t.food_id = f.id and t.locale = 'de') as de,
+                   (select t.description from food_translation t
+                    where t.food_id = f.id and t.locale = 'fr'
+                      and t.source = 'native') as fr,
                    {ncols}
             from food f join food_summary s on s.food_id = f.id
             where split_part(f.source,'_',1) = any(%s)
@@ -213,12 +276,14 @@ def sample_from_csv(csv_dir: Path, n: int):
             if (r.get("amount") or "").strip():
                 nut.setdefault(r["food_id"], {})[int(r["nutrient_id"])] = \
                     float(r["amount"])
-    de = {}
+    de, fr = {}, {}
     ft = csv_dir / "food_translation.csv"
     if ft.exists():
         for r in read_csv(ft):
             if r.get("locale") == "de":
                 de[r["food_id"]] = r["description"]
+            elif r.get("locale") == "fr":
+                fr[r["food_id"]] = r["description"]
     picks = random.sample(foods, min(n, len(foods)))
     out = []
     for r in picks:
@@ -227,6 +292,7 @@ def sample_from_csv(csv_dir: Path, n: int):
             "source": r["source"], "source_code": r["source_code"],
             "description": r["description"], "short_title": r["short_title"],
             "de": de.get(r["id"]),
+            "fr": fr.get(r["id"]),
             "nutrients": {i: vals.get(i) for i in range(1, 25)},
         })
     return out
@@ -245,12 +311,16 @@ def preflight(rows, source_dir: Path) -> None:
                               or list(source_dir.rglob("*Daten*.xlsx"))):
         sys.exit(f"error: no BLS *Daten*.xlsx under {source_dir}/bls - "
                  f"wrong --source-dir? run download_bls.py first.")
+    if "ciqual" in fams and not list(source_dir.rglob("compo_*.xml")):
+        sys.exit(f"error: no CIQUAL compo_*.xml under {source_dir}/ciqual - "
+                 f"wrong --source-dir? run download_ciqual.py first.")
 
 
 def validate(rows, source_dir: Path, verbose: bool):
     preflight(rows, source_dir)
     fdc_idx = None
     bls_idx = None
+    ciqual_idx = None
     checks = 0
     fails = 0
     per_source = {}          # source -> [checks, fails]
@@ -321,6 +391,24 @@ def validate(rows, source_dir: Path, verbose: bool):
             if raw["name_de"]:
                 check(r["de"] == raw["name_de"], r["source"], code,
                       "de_name", r["de"], raw["name_de"])
+        elif fam == "ciqual":
+            if ciqual_idx is None:
+                if verbose:
+                    print("  (loading CIQUAL raw XML ...)")
+                ciqual_idx = build_ciqual_index(source_dir)
+            raw = ciqual_idx.get(code)
+            if not raw:
+                check(False, r["source"], code, "in-source", "missing", "present")
+                continue
+            exp_desc = raw["name_en"] or raw["name_fr"]
+            check(r["description"] == exp_desc, r["source"], code,
+                  "description", r["description"], exp_desc)
+            check(r["short_title"] == ciqual_short(exp_desc), r["source"], code,
+                  "short_title", r["short_title"], ciqual_short(exp_desc))
+            check_nutrients(r["source"], code, r["nutrients"], raw["nutrients"])
+            if raw["name_fr"]:
+                check(r.get("fr") == raw["name_fr"], r["source"], code,
+                      "fr_name", r.get("fr"), raw["name_fr"])
     return checks, fails, per_source, per_field
 
 
@@ -332,7 +420,7 @@ def main() -> None:
                     help="validate converted CSVs offline instead of the DB")
     ap.add_argument("--source-dir", type=Path, default=Path("source"),
                     help="raw origin data folder (default: ./source)")
-    ap.add_argument("--source", nargs="+", choices=["fdc", "bls"],
+    ap.add_argument("--source", nargs="+", choices=["fdc", "bls", "ciqual"],
                     default=["fdc", "bls"], help="sources to sample (DB mode)")
     ap.add_argument("--samples", type=int, default=50)
     ap.add_argument("--seed", type=int, default=None)
@@ -365,7 +453,7 @@ def main() -> None:
     print("  sampled per source: "
           + ", ".join(f"{s}={n}" for s, n in sorted(by_src.items())))
     print("  checks per food: description, short_title, all 24 nutrients"
-          " (+ de_name for BLS)")
+          " (+ de_name for BLS, fr_name for CIQUAL)")
 
     checks, fails, per_source, per_field = validate(
         rows, args.source_dir, args.verbose)

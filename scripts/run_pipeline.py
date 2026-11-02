@@ -9,6 +9,7 @@ Sources (--source, repeatable; default: fdc bls):
     fdc   USDA FoodData Central (foundation + sr_legacy + fndds; add
           --branded for the ~2M-food branded set)
     bls   Bundeslebensmittelschluessel 4.0 (CC BY 4.0)
+    ciqual  ANSES CIQUAL 2025, France (Licence Ouverte / Etalab 2.0)
 
 Actions (--action, repeatable; default: all):
     download   fetch + extract raw data into <work>/source
@@ -53,8 +54,8 @@ ROOT = Path(__file__).resolve().parent          # scripts/
 REPO = ROOT.parent
 SCHEMA_SQL = REPO / "sql" / "schema.sql"
 
-# canonical source order (FDC before BLS: BLS needs FDC's nutrient table)
-SOURCE_ORDER = ["fdc", "bls"]
+# canonical source order (FDC first: the others need FDC's nutrient table)
+SOURCE_ORDER = ["fdc", "bls", "ciqual"]
 ALL_ACTIONS = ["download", "convert", "schema", "import"]
 
 
@@ -81,6 +82,9 @@ def do_download(src: str, source_dir: Path, datasets: list[str] | None,
         run(cmd, dry)
     elif src == "bls":
         run(py(ROOT / "bls" / "download_bls.py", "--output", source_dir), dry)
+    elif src == "ciqual":
+        run(py(ROOT / "ciqual" / "download_ciqual.py", "--output", source_dir),
+            dry)
 
 
 def do_convert(src: str, source_dir: Path, out_dir: Path, dry: bool) -> None:
@@ -90,6 +94,9 @@ def do_convert(src: str, source_dir: Path, out_dir: Path, dry: bool) -> None:
     elif src == "bls":
         run(py(ROOT / "bls" / "bls_to_ont_csv.py",
                "--source-dir", source_dir / "bls", "--output", out_dir), dry)
+    elif src == "ciqual":
+        run(py(ROOT / "ciqual" / "ciqual_to_ont_csv.py",
+               "--source-dir", source_dir / "ciqual", "--output", out_dir), dry)
 
 
 def do_schema(db: str, dry: bool) -> None:
@@ -125,7 +132,8 @@ def main() -> None:
         description="Download/convert/create/import food data in one command",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--source", nargs="+", choices=SOURCE_ORDER,
-                    default=SOURCE_ORDER, help="data sources (default: fdc bls)")
+                    default=["fdc", "bls"],
+                    help="data sources (default: fdc bls)")
     ap.add_argument("--action", nargs="+", choices=ALL_ACTIONS + ["all"],
                     default=["all"], help="steps to run (default: all)")
     ap.add_argument("--db", default=os.environ.get("SUPABASE_DB_URL"),
