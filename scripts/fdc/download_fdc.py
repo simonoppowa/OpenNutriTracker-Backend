@@ -73,16 +73,28 @@ def fetch_page(url: str) -> str:
         return resp.read().decode("utf-8", "replace")
 
 
-def latest_url(html: str, marker: str) -> str | None:
-    """Newest CSV zip URL for a dataset (by the date in the filename)."""
+def release_urls(html: str, marker: str) -> list[str]:
+    """CSV zip URLs for a dataset, newest first (by the date in the name)."""
     paths = {m.group(0) for m in URL_RE.finditer(html) if marker in m.group(0)}
-    if not paths:
-        return None
     def key(p: str) -> str:
         m = DATE_RE.search(p)
         return m.group(1) if m else ""
-    best = max(paths, key=key)
-    return BASE + best.replace(" ", "").replace("%", "")
+    return [BASE + p.replace(" ", "").replace("%", "")
+            for p in sorted(paths, key=key, reverse=True)]
+
+
+def latest_url(html: str, marker: str) -> str | None:
+    """Newest CSV zip URL for a dataset (by the date in the filename)."""
+    urls = release_urls(html, marker)
+    return urls[0] if urls else None
+
+
+def has_food_csv(zip_path: Path) -> bool:
+    """Whether the zip carries food.csv. The 2026-10-29 Foundation release
+    shipped without food.csv / food_nutrient.csv / food_portion.csv, which
+    the converter cannot use, so such a release is skipped."""
+    with zipfile.ZipFile(zip_path) as zf:
+        return any(Path(n).name == "food.csv" for n in zf.namelist())
 
 
 def download(url: str, dest: Path) -> None:
@@ -143,15 +155,25 @@ def main() -> None:
     args.output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="fdc_dl_") as tmp:
         for key in keys:
-            url = latest_url(html, DATASETS[key])
-            if not url:
+            urls = release_urls(html, DATASETS[key])
+            if not urls:
                 print(f"warning: no CSV download found for {key}", file=sys.stderr)
                 continue
-            date = DATE_RE.search(url)
-            print(f"\n{key}: {url.split('/')[-1]}"
-                  f"{'  (' + date.group(1) + ')' if date else ''}")
             zip_path = (args.output if args.keep_zips else Path(tmp)) / f"{key}.zip"
-            download(url, zip_path)
+            # Fall back to an older release when the newest is incomplete.
+            for url in urls[:3]:
+                date = DATE_RE.search(url)
+                print(f"\n{key}: {url.split('/')[-1]}"
+                      f"{'  (' + date.group(1) + ')' if date else ''}")
+                download(url, zip_path)
+                if has_food_csv(zip_path):
+                    break
+                print(f"  warning: this release has no food.csv; trying the "
+                      f"previous one", file=sys.stderr)
+            else:
+                print(f"warning: no usable {key} release among the newest "
+                      f"three", file=sys.stderr)
+                continue
             dest = args.output / key
             count = extract_flat(zip_path, dest)
             print(f"  extracted {count} CSV files -> {dest}")
