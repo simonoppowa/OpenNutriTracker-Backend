@@ -1,0 +1,4 @@
+id,food_id,amount,measure_unit_id,portion_description,modifier,seq_num,gram_weight
+50000001,50000001,1,9999,1 slice,,1,30.0
+50000002,50000001,1,9999,1 piece,,2,45.0
+50000003,50000002,1,9999,1 medium,,1,150.0

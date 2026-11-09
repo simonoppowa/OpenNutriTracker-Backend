@@ -1,0 +1,7 @@
+food_id,locale,description,source
+50000001,fi,"Ruisleipä, täysjyvä",native
+50000001,sv,"Rågbröd, fullkorn",native
+50000002,fi,"Omena, kuorineen",native
+50000002,sv,"Äpple, med skal",native
+50000003,fi,Omenamehu,native
+50000003,sv,Äppeljuice,native

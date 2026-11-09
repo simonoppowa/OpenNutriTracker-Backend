@@ -1,0 +1,4 @@
+id,source,source_code,description,short_title,food_category_id,publication_date
+50000001,fineli,1,"Rye bread, wholemeal",Rye bread,50002,
+50000002,fineli,2,"Apple, with skin",Apple,50001,
+50000003,fineli,3,Apple juice,Apple juice,50001,

@@ -6,8 +6,9 @@ making changes.
 ## What this project is
 
 A Supabase backend that ingests food reference data from several national
-databases (USDA FDC, German BLS, Indian INDB, Brazilian TBCA) into one
-canonical schema, consumed by the Flutter app
+databases (USDA FDC, German BLS, Indian INDB, Brazilian TBCA, French CIQUAL,
+Finnish Fineli, Danish Frida, Norwegian Matvaretabellen, Swedish SLV) into
+one canonical schema, consumed by the Flutter app
 [OpenNutriTracker](https://github.com/simonoppowa/OpenNutriTracker). Each
 source is downloaded, converted to a shared set of CSVs, and bulk-loaded.
 The app reads only the `food_summary` materialized view plus
@@ -27,29 +28,57 @@ The app reads only the `food_summary` materialized view plus
   `scripts/fdc/fdc_to_ont_csv.py` (`CANONICAL_NUTRIENTS`); every converter
   maps its source's components onto it.
 - **`nutrient_mapping.source` is an import FAMILY** (`fdc`, `bls`, `indb`,
-  `tbca`), NOT a `food_source.code`, and has no FK — `fdc` covers
-  `fdc_foundation` / `fdc_sr_legacy` / `fdc_survey` / `fdc_branded`.
+  `tbca`, `ciqual`, `fineli`, `frida`, `mvt`, `slv`), NOT a
+  `food_source.code`, and has no FK — `fdc` covers `fdc_foundation` /
+  `fdc_sr_legacy` / `fdc_survey` / `fdc_branded`.
 
 ## Fixed conventions
 
 - **`food.id` ranges** (avoid collisions): FDC = raw `fdc_id` (<10M),
-  BLS 10M+, INDB 20M+, TBCA 30M+; next source starts at 40M+.
-  `food_nutrient` id bases: BLS 20M+, INDB 30M+, TBCA 40M+.
-- **Category ids**: FDC 1–28, WWEIA/FNDDS 1002–9999, TBCA 30001+.
+  BLS 10M+, INDB 20M+, TBCA 30M+, CIQUAL 40M + alim_code, Fineli 50M+,
+  Frida 60M + FoodID, SLV (Livsmedelsverket) 70M+, Matvaretabellen (`mvt`)
+  80M+ (each new source takes its own free 10M block).
+  `food_nutrient` id bases: BLS 20M+, INDB 30M+, TBCA 40M+, CIQUAL 50M+,
+  Fineli 60M+, Frida 70M+, SLV 80M+, mvt 90M+.
+  `food_portion` id bases: INDB 20M+, Fineli 50M+, SLV 70M+ (reserved; the
+  SLV API has no portions, so none are emitted), mvt 80M+.
+- **Category ids**: FDC 1–28, WWEIA/FNDDS 1002–9999, TBCA 30001+,
+  CIQUAL 40000 + sub-group code (40101–41104), Fineli 50001+ (food-use
+  classes, `source='fineli'`), Frida 60000 + FoodGroupID, SLV 70001+
+  (`source='slv'`), mvt 80001+ (base 80_000).
 - **`food_nutrient.origin`** vocabulary: `analysis | literature |
   calculated | label` (empty when unknown).
 - **i18n**: `food.description` is always **English**. Translations live in
   `food_translation (food_id, locale, description, source, ai_generated)`
   with `source ∈ native | machine | community | verified`. Native names
-  (BLS German) are never overwritten by machine translation; MT/LLM output
-  sets `ai_generated = true`.
+  (BLS German, CIQUAL French, Fineli Finnish/Swedish, Frida Danish,
+  Matvaretabellen Norwegian Bokmål, SLV Swedish `sv`) are never
+  overwritten by machine translation; MT/LLM output sets
+  `ai_generated = true`.
 - **Nullable = honest**: a missing nutrient stays `NULL` (maps to dart
   `double?`), never `0`. Known gaps to respect: BLS has no trans fat; INDB
   has no trans fat and no B12; TBCA has no total sugars (only *added*
-  sugar — do NOT map it to canonical sugars).
+  sugar — do NOT map it to canonical sugars); CIQUAL has no trans fat,
+  and vitamin A (µg RAE) only where CIQUAL publishes its retinol-activity
+  value (~55% of foods; no retinol-only fallback). CIQUAL `traces` and
+  `< x` (below quantification limit) are measurements, stored as 0 with
+  `max = x`; only `-` is missing (NULL). Fineli covers all 24 (trans
+  fat included); a few foods lack single components (e.g. 6 spices/water
+  ship no values at all) and stay NULL. Frida covers all 24 but ships
+  vitamin A as RE (retinol + β-carotene/6): the converter derives µg RAE
+  from any two of RE/retinol/β-carotene and leaves RE-only foods NULL;
+  vitamin D includes 25-OH-D ×2.5; niacin is preformed (not NE).
+  Matvaretabellen covers all 24 (gaps are per food only); map its
+  `Mono+Di` (total) to sugars, never `Sukker` (added), and `Niacin`
+  (preformed), never `NIAEQ`. SLV has no trans fat.
 - **Unit discipline**: converters normalize to canonical units at import
   and document every factor in `nutrient_mapping` (e.g. BLS B6 µg→mg
-  ×0.001; INDB SFA/MUFA/PUFA mg→g ×0.001; INDB vitamin D = D2 + D3).
+  ×0.001; INDB SFA/MUFA/PUFA mg→g ×0.001; INDB vitamin D = D2 + D3;
+  Fineli energy kJ→kcal ×1/4.184 — the package has no kcal component;
+  Frida kJ→kcal ×1/4.184 fallback only; SLV energy = its kcal row, kJ
+  fallback ×0.239; SLV `VITA` is labelled "retinol equivalents" but
+  computed as retinol + β-carotene/12 (+ other carotenoids/24) = RAE, so
+  factor 1).
 
 ## Repo map
 
@@ -63,8 +92,14 @@ scripts/
   bls/  download_bls.py, bls_to_ont_csv.py   (BLS 4.0 xlsx)
   indb/ indb_to_ont_csv.py                    (Anuvaad INDB xlsx)
   tbca/ tbca_to_ont_csv.py                    (scraped TBCA CSVs)
+  ciqual/ download_ciqual.py, ciqual_to_ont_csv.py (ANSES CIQUAL XML)
+  fineli/ download_fineli.py, fineli_to_ont_csv.py  (Fineli CSV zip)
+  frida/ download_frida.py, frida_to_ont_csv.py (Danish FCDB xlsx, DTU Data)
+  mvt/  download_mvt.py, mvt_to_ont_csv.py   (Matvaretabellen JSON API)
+  slv/  download_slv.py, slv_to_ont_csv.py   (Livsmedelsverket API JSON)
   shared/ import_fdc.py         psycopg2 COPY loader (all sources)
           translate_all.py      DeepL, DB-driven, all sources, per-source CSVs
+          build_sqlite.py       offline foods.sqlite for the app (no Postgres)
   run_pipeline.py               orchestrates download/convert/schema/import
   test_against_source.py        validates DB/CSVs vs raw source data
 diagrams/multisource_food_schema.mermaid   schema ground truth
@@ -74,9 +109,11 @@ diagrams/multisource_food_schema.mermaid   schema ground truth
 
 `download_* -> *_to_ont_csv (raw -> canonical CSVs in out/<source>) ->
 import_fdc.py (COPY into Supabase, refresh food_summary)`. Converters read
-`./source` (or `./source/bls`) by default. `run_pipeline.py` chains it all;
-FDC must import before BLS (BLS reuses FDC's shared `nutrient` table), and
-the first import truncates while the rest use `--append`.
+`./source` (or `./source/bls`, `./source/ciqual`, `./source/fineli`,
+`./source/frida`, `./source/mvt`, `./source/slv`) by default.
+`run_pipeline.py` chains it all; FDC must import before BLS (BLS reuses
+FDC's shared `nutrient` table), and the first import truncates while the
+rest use `--append`.
 
 ## Running & testing (an agent MUST verify changes)
 
@@ -91,7 +128,18 @@ the first import truncates while the rest use `--append`.
   DB with `$SUPABASE_DB_URL`. It exits non-zero on any mismatch.
 - **Converters are tested on REAL data** before delivery; spot-check known
   values (Oat flakes BLS C133000 = 348 kcal; hummus FDC 321358 magnesium
-  71.1) rather than trusting the code path.
+  71.1; SLV 588 apple w/ skin = 48 kcal) rather than trusting the code
+  path.
+
+## Offline SQLite export
+
+`scripts/shared/build_sqlite.py` rebuilds `food_summary` and the five app
+RPCs in SQLite (`OfflineRpc`); the app's `SqliteFoodRpcClient` runs the
+same SQL. Changing the view or an RPC means changing both, and bumping
+`SCHEMA_VERSION` when the file's tables or columns change. Run
+`python3 scripts/shared/test_build_sqlite.py`; its fixture expectations
+were checked against Postgres. README lists where FTS5 matching differs
+from Postgres text search — keep that list true.
 
 ## When you change the schema
 
@@ -117,8 +165,21 @@ remember `refresh materialized view food_summary;` after data changes.
 Raw downloads and converted CSVs are **gitignored** (code-only repo,
 regenerated by the scripts). Licenses: FDC = CC0; BLS 4.0 = CC BY 4.0
 (attribute Max Rubner-Institut); INDB = CC BY 4.0 (attribute
-anuvaad.org.in); TBCA = free with attribution (USP/FoRC). Always state
-licensing when adding a source.
+anuvaad.org.in); TBCA = free with attribution (USP/FoRC); CIQUAL = Licence
+Ouverte / Etalab 2.0 (cite "Anses. 2025. Table de composition nutritionnelle
+des aliments Ciqual", DOI 10.57745/RDMHWY); Fineli = CC BY 4.0 (attribute
+Finnish Institute for Health and Welfare (THL), Fineli, release from
+`descript.txt`). fineli.fi sits behind a bot-protection challenge — never
+try to get around it; `download_fineli.py --zip` takes a browser-saved
+package; Frida (Danish Food Composition Database) dataset = CC BY 4.0
+(attribute "The Danish Food Composition Database (https://fcdb.fooddata.dk),
+version 6.1, May 2026, National Food Institute, Technical University of
+Denmark", https://doi.org/10.11583/DTU.32312844; its documentation PDFs are
+© DTU, not CC BY); Matvaretabellen = CC BY 4.0 per Mattilsynet's terms
+(data.norge.no lists NLOD 2.0); required attribution "Matvaretabellen 2026.
+Mattilsynet. www.matvaretabellen.no" (bump the year with each annual
+edition); SLV = CC BY 4.0 (state "Swedish Food Agency (Livsmedelsverket)" as
+the source). Always state licensing when adding a source.
 
 ## Style
 

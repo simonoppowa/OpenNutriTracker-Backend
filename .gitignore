@@ -7,7 +7,15 @@ output/
 *.zip
 BLS_*.xlsx
 Anuvaad_*.xlsx
+FCDB_*.xlsx
+FCDB_*.ods
+FCDB_*.pdf
 tbca_*.csv
+alim_*.xml
+compo_*.xml
+const_*.xml
+sources_*.xml
+Table Ciqual*
 FoodData_Central*/
 food_translation_*.csv
 
